@@ -1,29 +1,43 @@
 <?php
 require_once 'config/db.php';
 
-// Get current display mode from session or default to lmt
+// Get current display mode
 $current_mode = isset($_GET['mode']) ? $_GET['mode'] : (isset($_SESSION['display_mode']) ? $_SESSION['display_mode'] : 'lmt');
 if (isset($_GET['mode'])) {
     $_SESSION['display_mode'] = $current_mode;
 }
 
-// Get current content for display
+// Validate mode
+if (!in_array($current_mode, ['lmt', 'bmt'])) {
+    $current_mode = 'lmt';
+}
+
+// Get current content
 $stmt = $pdo->prepare("SELECT * FROM content WHERE admin_role = ? AND is_active = 1 ORDER BY created_at DESC LIMIT 1");
 $stmt->execute([$current_mode]);
 $current_content = $stmt->fetch();
 
-// If no active content, get default
 if (!$current_content) {
     $stmt = $pdo->prepare("SELECT * FROM default_settings WHERE admin_role = ?");
     $stmt->execute([$current_mode]);
     $default = $stmt->fetch();
     $current_content = [
+        'id' => null,
         'content_type' => $default['default_content_type'],
         'content_data' => $default['default_content_data'],
         'message_type' => $default['default_message_type'],
         'display_duration' => 10,
-        'loop_count' => 1
+        'loop_count' => 1,
+        'slide_durations' => null
     ];
+}
+
+// Get slides for slideshow content
+$slides = [];
+if ($current_content['content_type'] === 'slideshow' && $current_content['id']) {
+    $stmt = $pdo->prepare("SELECT * FROM content_slides WHERE content_id = ? ORDER BY slide_order ASC");
+    $stmt->execute([$current_content['id']]);
+    $slides = $stmt->fetchAll();
 }
 ?>
 
@@ -43,12 +57,11 @@ if (!$current_content) {
 
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: #000000;
             min-height: 100vh;
             overflow: hidden;
         }
 
-        /* Navigation Dropdown - Left Side */
         .nav-dropdown {
             position: fixed;
             left: 0;
@@ -62,12 +75,12 @@ if (!$current_content) {
             z-index: 1000;
         }
 
-        .nav-dropdown:hover {
+        .nav-dropdown:hover,
+        .nav-dropdown.active {
             transform: translateX(0);
         }
 
         .nav-dropdown.active {
-            transform: translateX(0);
             background: rgba(0, 0, 0, 0.95);
         }
 
@@ -101,7 +114,6 @@ if (!$current_content) {
             transform: scale(1.05);
         }
 
-        /* Main Display Area */
         .display-container {
             width: 100vw;
             height: 100vh;
@@ -110,6 +122,7 @@ if (!$current_content) {
             justify-content: center;
             overflow: hidden;
             position: relative;
+            background: #000;
         }
 
         .content-wrapper {
@@ -120,7 +133,6 @@ if (!$current_content) {
             justify-content: center;
         }
 
-        /* Image Slideshow */
         .slideshow-container {
             width: 100%;
             height: 100%;
@@ -134,14 +146,13 @@ if (!$current_content) {
             object-fit: contain;
             position: absolute;
             opacity: 0;
-            transition: opacity 1s ease;
+            transition: opacity 0.5s ease-in-out;
         }
 
         .slide-image.active {
             opacity: 1;
         }
 
-        /* YouTube Video */
         .video-container {
             width: 100%;
             height: 100%;
@@ -154,7 +165,19 @@ if (!$current_content) {
             border: none;
         }
 
-        /* Custom Message Styles */
+        .ppt-container {
+            width: 100%;
+            height: 100%;
+            background: #000;
+            position: relative;
+        }
+
+        .ppt-iframe {
+            width: 100%;
+            height: 100%;
+            border: none;
+        }
+
         .message-container {
             width: 100%;
             height: 100%;
@@ -230,14 +253,8 @@ if (!$current_content) {
             font-weight: bold;
         }
 
-        .warning .message-text {
-            color: #fff;
-        }
-
-        .caution .message-text {
-            color: #fff;
-        }
-
+        .warning .message-text,
+        .caution .message-text,
         .memo .message-text {
             color: #fff;
         }
@@ -246,7 +263,6 @@ if (!$current_content) {
             color: #333;
         }
 
-        /* Current mode indicator */
         .mode-indicator {
             position: fixed;
             bottom: 20px;
@@ -286,9 +302,7 @@ if (!$current_content) {
     </div>
 
     <div class="display-container">
-        <div class="content-wrapper" id="contentWrapper">
-            <!-- Content will be loaded here -->
-        </div>
+        <div class="content-wrapper" id="contentWrapper"></div>
     </div>
 
     <div class="mode-indicator" id="modeIndicator">
@@ -298,121 +312,107 @@ if (!$current_content) {
     <script>
         let currentMode = '<?php echo $current_mode; ?>';
         let currentContent = <?php echo json_encode($current_content); ?>;
-        let slideIndex = 0;
-        let slideshowInterval = null;
+        let currentSlides = <?php echo json_encode($slides); ?>;
+        let currentVersion = <?php echo json_encode($current_version ?? 1); ?>;
+        let currentTimeouts = [];
         let videoLoopCount = 0;
-        let videoPlayer = null;
+        let eventSource = null;
 
-        // Load content on page load
-        document.addEventListener('DOMContentLoaded', function() {
-            loadContent(currentContent);
-            startAutoRefresh();
-        });
-
-        // Nav dropdown hover functionality
-        const navDropdown = document.getElementById('navDropdown');
-        let hoverTimer;
-
-        navDropdown.addEventListener('mouseenter', function() {
-            clearTimeout(hoverTimer);
-            this.style.transform = 'translateX(0)';
-            this.style.background = 'rgba(0, 0, 0, 0.4)';
-        });
-
-        navDropdown.addEventListener('mouseleave', function() {
-            hoverTimer = setTimeout(() => {
-                if (!navDropdown.classList.contains('active')) {
-                    navDropdown.style.transform = 'translateX(-98%)';
-                }
-            }, 1000);
-        });
-
-        navDropdown.addEventListener('click', function(e) {
-            if (e.target.classList.contains('mode-option')) {
-                this.classList.add('active');
-                this.style.background = 'rgba(0, 0, 0, 0.95)';
-            } else {
-                this.classList.toggle('active');
-                if (this.classList.contains('active')) {
-                    this.style.background = 'rgba(0, 0, 0, 0.95)';
-                    this.style.transform = 'translateX(0)';
-                } else {
-                    this.style.background = 'rgba(0, 0, 0, 0.4)';
-                    this.style.transform = 'translateX(-98%)';
-                }
-            }
-        });
+        function clearAllTimeouts() {
+            currentTimeouts.forEach(timeout => clearTimeout(timeout));
+            currentTimeouts = [];
+        }
 
         function switchMode(mode) {
             if (mode === currentMode) return;
             currentMode = mode;
             document.getElementById('modeIndicator').innerHTML = `Current: ${mode.toUpperCase()}`;
 
-            // Fetch new content for the selected mode
             fetch(`get_content.php?mode=${mode}&t=${Date.now()}`)
                 .then(response => response.json())
                 .then(data => {
-                    currentContent = data;
-                    loadContent(currentContent);
+                    currentContent = data.content;
+                    currentSlides = data.slides || [];
+                    loadContent();
                 })
                 .catch(error => console.error('Error:', error));
 
-            // Close dropdown
-            navDropdown.classList.remove('active');
-            navDropdown.style.transform = 'translateX(-98%)';
+            document.getElementById('navDropdown').classList.remove('active');
         }
 
-        function loadContent(content) {
+        function loadContent() {
             const wrapper = document.getElementById('contentWrapper');
+            clearAllTimeouts();
 
-            // Clear any existing intervals
-            if (slideshowInterval) clearInterval(slideshowInterval);
-
-            switch (content.content_type) {
-                case 'slide':
-                    loadSlideshow(content);
+            switch (currentContent.content_type) {
+                case 'slideshow':
+                    loadSlideshow();
                     break;
                 case 'youtube':
-                    loadYouTube(content);
+                    loadYouTube();
                     break;
                 case 'message':
-                    loadMessage(content);
+                    loadMessage();
+                    break;
+                case 'ppt':
+                    loadPPT();
                     break;
                 default:
-                    loadMessage(content);
+                    loadMessage();
             }
         }
 
-        function loadSlideshow(content) {
+        function loadSlideshow() {
             const wrapper = document.getElementById('contentWrapper');
-            const images = JSON.parse(content.content_data);
+
+            if (!currentSlides || currentSlides.length === 0) {
+                loadMessage();
+                return;
+            }
 
             let html = '<div class="slideshow-container">';
-            images.forEach((img, index) => {
-                html += `<img src="${img}" class="slide-image ${index === 0 ? 'active' : ''}" data-index="${index}">`;
+            currentSlides.forEach((slide, index) => {
+                html += `<img src="${slide.image_path}" class="slide-image" data-index="${index}" style="opacity: ${index === 0 ? 1 : 0}">`;
             });
             html += '</div>';
             wrapper.innerHTML = html;
 
-            slideIndex = 0;
+            let currentIndex = 0;
             const slides = document.querySelectorAll('.slide-image');
 
-            if (slideshowInterval) clearInterval(slideshowInterval);
+            function showNextSlide() {
+                slides[currentIndex].style.opacity = '0';
+                currentIndex = (currentIndex + 1) % slides.length;
+                slides[currentIndex].style.opacity = '1';
 
-            slideshowInterval = setInterval(() => {
-                slides[slideIndex].classList.remove('active');
-                slideIndex = (slideIndex + 1) % slides.length;
-                slides[slideIndex].classList.add('active');
-            }, content.display_duration * 1000);
+                const duration = currentSlides[currentIndex]?.duration || 10;
+                const timeoutId = setTimeout(showNextSlide, duration * 1000);
+                currentTimeouts.push(timeoutId);
+            }
+
+            // Start slideshow with first slide duration
+            const firstDuration = currentSlides[0]?.duration || 10;
+            if (slides.length > 1) {
+                const timeoutId = setTimeout(showNextSlide, firstDuration * 1000);
+                currentTimeouts.push(timeoutId);
+            }
+
+            // Schedule content expiry if needed
+            if (currentContent.display_duration && currentContent.display_duration > 0) {
+                const timeoutId = setTimeout(() => {
+                    loadNextContent();
+                }, currentContent.display_duration * 1000);
+                currentTimeouts.push(timeoutId);
+            }
         }
 
-        function loadYouTube(content) {
+        function loadYouTube() {
             const wrapper = document.getElementById('contentWrapper');
-            const videoId = extractYouTubeId(content.content_data);
+            const videoId = extractYouTubeId(currentContent.content_data);
 
             wrapper.innerHTML = `
                 <div class="video-container">
-                    <iframe src="https://www.youtube.com/embed/${videoId}?autoplay=1&enablejsapi=1" 
+                    <iframe id="youtubePlayer" src="https://www.youtube.com/embed/${videoId}?autoplay=1&enablejsapi=1" 
                             frameborder="0" 
                             allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
                             allowfullscreen>
@@ -420,88 +420,110 @@ if (!$current_content) {
                 </div>
             `;
 
-            // Handle video looping
             videoLoopCount = 0;
-            const iframe = wrapper.querySelector('iframe');
+            const totalDuration = currentContent.display_duration * currentContent.loop_count;
 
-            // Listen for video end events
-            window.addEventListener('message', function(event) {
-                if (event.data === 'ended') {
-                    videoLoopCount++;
-                    if (videoLoopCount < content.loop_count) {
-                        // Reload video
-                        iframe.src = iframe.src;
-                    } else {
-                        // Load next content or default
-                        loadNextContent(content);
-                    }
+            function handleVideoEnd() {
+                videoLoopCount++;
+                if (videoLoopCount < currentContent.loop_count) {
+                    const iframe = document.getElementById('youtubePlayer');
+                    iframe.src = iframe.src;
+                    const timeoutId = setTimeout(handleVideoEnd, totalDuration * 1000);
+                    currentTimeouts.push(timeoutId);
+                } else {
+                    loadNextContent();
                 }
-            });
+            }
 
-            // Set timeout as backup
-            setTimeout(() => {
-                if (videoLoopCount < content.loop_count) {
-                    videoLoopCount++;
-                    if (videoLoopCount >= content.loop_count) {
-                        loadNextContent(content);
-                    }
-                }
-            }, content.display_duration * 1000 * content.loop_count);
+            const timeoutId = setTimeout(handleVideoEnd, totalDuration * 1000);
+            currentTimeouts.push(timeoutId);
         }
 
-        function loadMessage(content) {
+        function loadPPT() {
             const wrapper = document.getElementById('contentWrapper');
-            const messageType = content.message_type || 'memo';
-            const messageText = content.content_data;
+            let pptData;
 
-            let icon = '';
-            switch (messageType) {
-                case 'warning':
-                    icon = '⚠️';
-                    break;
-                case 'caution':
-                    icon = '⚡';
-                    break;
-                case 'memo':
-                    icon = '📝';
-                    break;
-                case 'congratulation':
-                    icon = '🎉';
-                    break;
+            try {
+                pptData = JSON.parse(currentContent.content_data);
+            } catch (e) {
+                console.error('Invalid PPT data');
+                loadMessage();
+                return;
             }
+
+            // Use Google Docs viewer for better PPT support
+            const viewerUrl = `https://docs.google.com/viewer?url=${encodeURIComponent(window.location.origin + '/' + pptData.file_path)}&embedded=true`;
+
+            wrapper.innerHTML = `
+                <div class="ppt-container">
+                    <iframe src="${viewerUrl}" class="ppt-iframe" allowfullscreen></iframe>
+                </div>
+            `;
+
+            if (currentContent.display_duration && currentContent.display_duration > 0) {
+                const timeoutId = setTimeout(() => {
+                    loadNextContent();
+                }, currentContent.display_duration * 1000);
+                currentTimeouts.push(timeoutId);
+            }
+        }
+
+        function loadMessage() {
+            const wrapper = document.getElementById('contentWrapper');
+            const messageType = currentContent.message_type || 'memo';
+            const messageText = currentContent.content_data;
+
+            const icons = {
+                warning: '⚠️',
+                caution: '⚡',
+                memo: '📝',
+                congratulation: '🎉'
+            };
 
             wrapper.innerHTML = `
                 <div class="message-container">
                     <div class="message-card ${messageType}">
-                        <div class="message-icon">${icon}</div>
-                        <div class="message-text">${messageText}</div>
+                        <div class="message-icon">${icons[messageType] || '📝'}</div>
+                        <div class="message-text">${escapeHtml(messageText)}</div>
                     </div>
                 </div>
             `;
 
-            // Auto refresh to next content if duration set
-            if (content.display_duration && content.display_duration > 0) {
-                setTimeout(() => {
-                    loadNextContent(content);
-                }, content.display_duration * 1000);
+            if (currentContent.display_duration && currentContent.display_duration > 0) {
+                const timeoutId = setTimeout(() => {
+                    loadNextContent();
+                }, currentContent.display_duration * 1000);
+                currentTimeouts.push(timeoutId);
             }
         }
 
-        function loadNextContent(currentContent) {
+        function loadNextContent() {
             if (currentContent.next_content_id) {
                 fetch(`get_content.php?id=${currentContent.next_content_id}`)
                     .then(response => response.json())
-                    .then(content => {
-                        loadContent(content);
+                    .then(data => {
+                        currentContent = data.content;
+                        currentSlides = data.slides || [];
+                        loadContent();
+                    })
+                    .catch(error => {
+                        console.error('Error loading next content:', error);
+                        loadDefaultContent();
                     });
             } else {
-                // Load default content
-                fetch(`get_content.php?mode=${currentMode}&default=true`)
-                    .then(response => response.json())
-                    .then(content => {
-                        loadContent(content);
-                    });
+                loadDefaultContent();
             }
+        }
+
+        function loadDefaultContent() {
+            fetch(`get_content.php?mode=${currentMode}&default=true`)
+                .then(response => response.json())
+                .then(data => {
+                    currentContent = data.content;
+                    currentSlides = data.slides || [];
+                    loadContent();
+                })
+                .catch(error => console.error('Error loading default content:', error));
         }
 
         function extractYouTubeId(url) {
@@ -510,20 +532,73 @@ if (!$current_content) {
             return (match && match[2].length === 11) ? match[2] : url;
         }
 
-        function startAutoRefresh() {
-            // Check for new content every 5 seconds
-            setInterval(() => {
-                fetch(`check_update.php?mode=${currentMode}&timestamp=${Date.now()}`)
-                    .then(response => response.json())
-                    .then(data => {
-                        if (data.updated) {
-                            // Force refresh to accept new display
-                            location.reload();
-                        }
-                    })
-                    .catch(error => console.error('Error checking updates:', error));
-            }, 5000);
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
         }
+
+        function startRealTimeUpdates() {
+            // Use SSE only (more efficient)
+            if (eventSource) {
+                eventSource.close();
+            }
+
+            eventSource = new EventSource('sse_updates.php');
+
+            eventSource.onmessage = function(event) {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.mode === currentMode) {
+                        fetch(`get_content.php?mode=${currentMode}&t=${Date.now()}`)
+                            .then(response => response.json())
+                            .then(data => {
+                                currentContent = data.content;
+                                currentSlides = data.slides || [];
+                                loadContent();
+                            });
+                    }
+                } catch (e) {
+                    console.error('SSE error:', e);
+                }
+            };
+
+            eventSource.onerror = function() {
+                console.log('SSE connection lost, reconnecting in 5 seconds...');
+                eventSource.close();
+                setTimeout(startRealTimeUpdates, 5000);
+            };
+        }
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', function() {
+            loadContent();
+            startRealTimeUpdates();
+
+            // Nav dropdown functionality
+            const navDropdown = document.getElementById('navDropdown');
+            let hoverTimer;
+
+            navDropdown.addEventListener('mouseenter', function() {
+                clearTimeout(hoverTimer);
+                this.style.transform = 'translateX(0)';
+            });
+
+            navDropdown.addEventListener('mouseleave', function() {
+                hoverTimer = setTimeout(() => {
+                    if (!this.classList.contains('active')) {
+                        this.style.transform = 'translateX(-98%)';
+                    }
+                }, 1000);
+            });
+
+            navDropdown.addEventListener('click', function(e) {
+                if (!e.target.classList.contains('mode-option')) {
+                    this.classList.toggle('active');
+                    this.style.transform = this.classList.contains('active') ? 'translateX(0)' : 'translateX(-98%)';
+                }
+            });
+        });
     </script>
 </body>
 
