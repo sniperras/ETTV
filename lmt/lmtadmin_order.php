@@ -7,11 +7,10 @@ if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'lmtadmin') {
     exit();
 }
 
-// Add display_order column if not exists (run once)
+// Add display_order column if not exists
 try {
     $pdo->exec("ALTER TABLE content ADD COLUMN IF NOT EXISTS display_order INT DEFAULT NULL");
 } catch (PDOException $e) {
-    // Column might already exist
 }
 
 // Handle save order
@@ -22,34 +21,55 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_order'])) {
         if ($order_data && is_array($order_data)) {
             $pdo->beginTransaction();
 
-            // Reset all display_order to null first
-            $stmt = $pdo->prepare("UPDATE content SET display_order = NULL WHERE admin_role = 'lmt'");
-            $stmt->execute();
-
             // Update display_order for each content
             foreach ($order_data as $index => $item) {
                 $stmt = $pdo->prepare("UPDATE content SET display_order = ? WHERE id = ? AND admin_role = 'lmt'");
                 $stmt->execute([$index, $item['id']]);
             }
 
-            // Set the first item as active, others inactive
-            if (!empty($order_data)) {
-                $first_id = $order_data[0]['id'];
-                $stmt = $pdo->prepare("UPDATE content SET is_active = 0 WHERE admin_role = 'lmt'");
-                $stmt->execute();
-                $stmt = $pdo->prepare("UPDATE content SET is_active = 1 WHERE id = ? AND admin_role = 'lmt'");
-                $stmt->execute([$first_id]);
+            // Build the chain: set next_content_id based on order
+            $prev_id = null;
+            foreach ($order_data as $item) {
+                if ($prev_id !== null) {
+                    $stmt = $pdo->prepare("UPDATE content SET next_content_id = ? WHERE id = ?");
+                    $stmt->execute([$item['id'], $prev_id]);
+                }
+                $prev_id = $item['id'];
             }
+            // Last item has no next content
+            if ($prev_id !== null) {
+                $stmt = $pdo->prepare("UPDATE content SET next_content_id = NULL WHERE id = ?");
+                $stmt->execute([$prev_id]);
+            }
+
+            // Set ALL content as active (they will play in sequence)
+            $stmt = $pdo->prepare("UPDATE content SET is_active = 1 WHERE admin_role = 'lmt'");
+            $stmt->execute();
 
             // Update version for real-time refresh
             $stmt = $pdo->prepare("UPDATE content_version SET version = version + 1, last_update = NOW() WHERE admin_role = 'lmt'");
             $stmt->execute();
 
             $pdo->commit();
-            $_SESSION['flash_success'] = "Display order saved successfully! TV will update automatically.";
+            $_SESSION['flash_success'] = "Display order saved successfully! TV will play in this sequence.";
         }
     } catch (Exception $e) {
         $pdo->rollBack();
+        $_SESSION['flash_error'] = "Error: " . $e->getMessage();
+    }
+    header('Location: lmtadmin_order.php');
+    exit();
+}
+
+// Handle toggle active status
+if (isset($_GET['toggle_active'])) {
+    try {
+        $content_id = (int)$_GET['toggle_active'];
+        $stmt = $pdo->prepare("UPDATE content SET is_active = NOT is_active WHERE id = ? AND admin_role = 'lmt'");
+        $stmt->execute([$content_id]);
+
+        $_SESSION['flash_success'] = "Content status updated!";
+    } catch (Exception $e) {
         $_SESSION['flash_error'] = "Error: " . $e->getMessage();
     }
     header('Location: lmtadmin_order.php');
@@ -63,11 +83,9 @@ if (isset($_GET['delete_id'])) {
         $stmt = $pdo->prepare("DELETE FROM content WHERE id = ? AND admin_role = 'lmt'");
         $stmt->execute([$delete_id]);
 
-        // Also delete associated slides
         $stmt2 = $pdo->prepare("DELETE FROM content_slides WHERE content_id = ?");
         $stmt2->execute([$delete_id]);
 
-        // Update version for real-time refresh
         $stmt3 = $pdo->prepare("UPDATE content_version SET version = version + 1, last_update = NOW() WHERE admin_role = 'lmt'");
         $stmt3->execute();
 
@@ -88,7 +106,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['edit_duration'])) {
         $stmt = $pdo->prepare("UPDATE content SET display_duration = ? WHERE id = ? AND admin_role = 'lmt'");
         $stmt->execute([$new_duration, $content_id]);
 
-        // Update version for real-time refresh
         $stmt2 = $pdo->prepare("UPDATE content_version SET version = version + 1, last_update = NOW() WHERE admin_role = 'lmt'");
         $stmt2->execute();
 
@@ -127,54 +144,14 @@ function formatDuration($seconds)
     return round($seconds / 86400) . ' days';
 }
 
-// Get all content for LMT (ordered by display_order, then id)
+// Get all content for LMT ordered by display_order
 $stmt = $pdo->prepare("SELECT * FROM content WHERE admin_role = 'lmt' ORDER BY COALESCE(display_order, 999999) ASC, id ASC");
 $stmt->execute();
 $contents = $stmt->fetchAll();
 
-// Get preview data for each content
-foreach ($contents as &$content) {
-    if ($content['content_type'] === 'slideshow') {
-        $stmt2 = $pdo->prepare("SELECT image_path FROM content_slides WHERE content_id = ? ORDER BY slide_order ASC LIMIT 1");
-        $stmt2->execute([$content['id']]);
-        $first_slide = $stmt2->fetch();
-        $content['preview_image'] = $first_slide ? $first_slide['image_path'] : null;
-
-        $stmt3 = $pdo->prepare("SELECT COUNT(*) as count FROM content_slides WHERE content_id = ?");
-        $stmt3->execute([$content['id']]);
-        $slide_count = $stmt3->fetch();
-        $content['slide_count'] = $slide_count['count'];
-    } elseif ($content['content_type'] === 'youtube') {
-        $video_id = extractYouTubeID($content['content_data']);
-        $content['preview_image'] = "https://img.youtube.com/vi/{$video_id}/mqdefault.jpg";
-        $content['video_id'] = $video_id;
-    } elseif ($content['content_type'] === 'ppt') {
-        $content['preview_ppt'] = true;
-    }
-}
-
-function extractYouTubeID($url)
-{
-    $patterns = [
-        '/(?:youtube\.com\/watch\?v=)([^&]+)/',
-        '/(?:youtu\.be\/)([^?]+)/',
-        '/(?:youtube\.com\/embed\/)([^?]+)/'
-    ];
-    foreach ($patterns as $pattern) {
-        if (preg_match($pattern, $url, $matches)) {
-            return $matches[1];
-        }
-    }
-    return $url;
-}
-
-// Get flash messages
 $success = isset($_SESSION['flash_success']) ? $_SESSION['flash_success'] : '';
 $error = isset($_SESSION['flash_error']) ? $_SESSION['flash_error'] : '';
 unset($_SESSION['flash_success'], $_SESSION['flash_error']);
-
-// Detect base URL for AJAX calls
-$base_url = (isset($_SERVER['HTTPS']) ? 'https://' : 'http://') . $_SERVER['HTTP_HOST'] . '/ettv/';
 ?>
 
 <!DOCTYPE html>
@@ -204,7 +181,6 @@ $base_url = (isset($_SERVER['HTTPS']) ? 'https://' : 'http://') . $_SERVER['HTTP
             display: flex;
             justify-content: space-between;
             align-items: center;
-            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
         }
 
         .header h1 {
@@ -223,13 +199,12 @@ $base_url = (isset($_SERVER['HTTPS']) ? 'https://' : 'http://') . $_SERVER['HTTP
             font-size: 14px;
             font-weight: bold;
             cursor: pointer;
-            transition: transform 0.2s;
             text-decoration: none;
             display: inline-block;
         }
 
         .btn:hover {
-            transform: scale(1.02);
+            opacity: 0.9;
         }
 
         .btn-primary {
@@ -249,6 +224,16 @@ $base_url = (isset($_SERVER['HTTPS']) ? 'https://' : 'http://') . $_SERVER['HTTP
 
         .btn-danger {
             background: #dc3545;
+            color: white;
+        }
+
+        .btn-success {
+            background: #28a745;
+            color: white;
+        }
+
+        .btn-info {
+            background: #17a2b8;
             color: white;
         }
 
@@ -307,7 +292,6 @@ $base_url = (isset($_SERVER['HTTPS']) ? 'https://' : 'http://') . $_SERVER['HTTP
 
         .order-item.dragging {
             opacity: 0.5;
-            cursor: grabbing;
         }
 
         .order-item.drag-over {
@@ -318,6 +302,11 @@ $base_url = (isset($_SERVER['HTTPS']) ? 'https://' : 'http://') . $_SERVER['HTTP
         .order-item.selected {
             border-color: #28a745;
             background: #e8f5e9;
+        }
+
+        .order-item.inactive {
+            opacity: 0.6;
+            background: #e9ecef;
         }
 
         .order-item-content {
@@ -331,10 +320,6 @@ $base_url = (isset($_SERVER['HTTPS']) ? 'https://' : 'http://') . $_SERVER['HTTP
             font-size: 24px;
             cursor: grab;
             color: #999;
-        }
-
-        .drag-handle:active {
-            cursor: grabbing;
         }
 
         .item-icon {
@@ -395,7 +380,6 @@ $base_url = (isset($_SERVER['HTTPS']) ? 'https://' : 'http://') . $_SERVER['HTTP
             align-items: center;
             justify-content: center;
             overflow: hidden;
-            position: relative;
         }
 
         .preview-placeholder {
@@ -448,7 +432,6 @@ $base_url = (isset($_SERVER['HTTPS']) ? 'https://' : 'http://') . $_SERVER['HTTP
             padding: 10px;
             border: 2px solid #e0e0e0;
             border-radius: 8px;
-            font-size: 14px;
         }
 
         .modal-footer {
@@ -464,8 +447,6 @@ $base_url = (isset($_SERVER['HTTPS']) ? 'https://' : 'http://') . $_SERVER['HTTP
             border-radius: 8px;
             margin: 10px 20px 0 20px;
             border-left: 4px solid #28a745;
-            position: relative;
-            z-index: 100;
         }
 
         .error {
@@ -475,24 +456,8 @@ $base_url = (isset($_SERVER['HTTPS']) ? 'https://' : 'http://') . $_SERVER['HTTP
             border-radius: 8px;
             margin: 10px 20px 0 20px;
             border-left: 4px solid #dc3545;
-            position: relative;
-            z-index: 100;
         }
 
-        ::-webkit-scrollbar {
-            width: 8px;
-        }
-
-        ::-webkit-scrollbar-track {
-            background: #f1f1f1;
-        }
-
-        ::-webkit-scrollbar-thumb {
-            background: #888;
-            border-radius: 4px;
-        }
-
-        /* Auto-hide success/error messages */
         .fade-out {
             animation: fadeOut 3s ease forwards;
         }
@@ -526,7 +491,6 @@ $base_url = (isset($_SERVER['HTTPS']) ? 'https://' : 'http://') . $_SERVER['HTTP
     <?php if ($success): ?>
         <div class="success" id="successMsg"><?php echo htmlspecialchars($success); ?></div>
     <?php endif; ?>
-
     <?php if ($error): ?>
         <div class="error" id="errorMsg"><?php echo htmlspecialchars($error); ?></div>
     <?php endif; ?>
@@ -535,16 +499,14 @@ $base_url = (isset($_SERVER['HTTPS']) ? 'https://' : 'http://') . $_SERVER['HTTP
         <div class="order-panel">
             <div class="order-header">
                 <h3>📋 Display Sequence (Drag to reorder)</h3>
-                <button id="saveOrderBtn" class="btn btn-primary">💾 Save Order</button>
+                <button id="saveOrderBtn" class="btn btn-primary">💾 Save Order & Activate All</button>
             </div>
             <div class="order-list" id="orderList">
                 <?php if (empty($contents)): ?>
-                    <div style="text-align: center; padding: 40px; color: #999;">
-                        No content found. <a href="lmtadmin.php">Create your first display content</a>
-                    </div>
+                    <div style="text-align: center; padding: 40px;">No content found. <a href="lmtadmin.php">Create your first display content</a></div>
                 <?php else: ?>
                     <?php foreach ($contents as $index => $content): ?>
-                        <div class="order-item" data-id="<?php echo $content['id']; ?>" data-index="<?php echo $index; ?>">
+                        <div class="order-item <?php echo $content['is_active'] ? '' : 'inactive'; ?>" data-id="<?php echo $content['id']; ?>">
                             <div class="order-item-content">
                                 <div class="drag-handle">☰</div>
                                 <div class="item-icon">
@@ -557,22 +519,22 @@ $base_url = (isset($_SERVER['HTTPS']) ? 'https://' : 'http://') . $_SERVER['HTTP
                                 </div>
                                 <div class="item-info">
                                     <div class="item-title">
-                                        <?php echo ucfirst($content['content_type']); ?>
-                                        <?php if ($content['content_type'] === 'slideshow' && isset($content['slide_count'])): ?>
-                                            <span style="font-size: 11px; color: #666;">(<?php echo $content['slide_count']; ?> slides)</span>
-                                        <?php endif; ?>
+                                        #<?php echo $index + 1; ?> - <?php echo ucfirst($content['content_type']); ?>
                                     </div>
                                     <div class="item-details">
                                         Duration: <?php echo formatDuration($content['display_duration']); ?>
-                                        <?php if ($content['is_active'] == 1): ?>
+                                        <?php if ($content['is_active']): ?>
                                             <span style="color: #28a745;">✅ Active</span>
                                         <?php else: ?>
-                                            <span style="color: #999;">⏸️ Inactive</span>
+                                            <span style="color: #dc3545;">⛔ Inactive</span>
                                         <?php endif; ?>
                                     </div>
                                 </div>
                             </div>
                             <div class="item-actions">
+                                <a href="?toggle_active=<?php echo $content['id']; ?>" class="btn btn-<?php echo $content['is_active'] ? 'secondary' : 'success'; ?> btn-icon" onclick="return confirm('Toggle active status?')">
+                                    <?php echo $content['is_active'] ? '🔴 Deactivate' : '🟢 Activate'; ?>
+                                </a>
                                 <button class="btn btn-warning btn-icon" onclick="editDuration(<?php echo $content['id']; ?>, <?php echo $content['display_duration']; ?>)">✏️ Edit</button>
                                 <button class="btn btn-danger btn-icon" onclick="deleteContent(<?php echo $content['id']; ?>)">🗑️ Delete</button>
                             </div>
@@ -585,7 +547,7 @@ $base_url = (isset($_SERVER['HTTPS']) ? 'https://' : 'http://') . $_SERVER['HTTP
         <div class="preview-panel">
             <div class="preview-header">
                 <h3>👁️ Preview</h3>
-                <p style="font-size: 12px; margin-top: 5px;">Click on any item to preview</p>
+                <p style="font-size: 12px;">Click on any item to preview</p>
             </div>
             <div class="preview-content" id="previewContent">
                 <div class="preview-placeholder">
@@ -599,7 +561,7 @@ $base_url = (isset($_SERVER['HTTPS']) ? 'https://' : 'http://') . $_SERVER['HTTP
     <div id="editModal" class="modal">
         <div class="modal-content">
             <div class="modal-header">✏️ Edit Display Duration</div>
-            <form method="POST" id="editForm">
+            <form method="POST">
                 <input type="hidden" name="content_id" id="editContentId">
                 <div class="modal-body">
                     <label>Display Duration:</label>
@@ -627,198 +589,117 @@ $base_url = (isset($_SERVER['HTTPS']) ? 'https://' : 'http://') . $_SERVER['HTTP
     </div>
 
     <script>
-        const baseUrl = '<?php echo $base_url; ?>';
         let draggedItem = null;
 
-        // Auto-hide success/error messages after 3 seconds
         setTimeout(function() {
             const successMsg = document.getElementById('successMsg');
             const errorMsg = document.getElementById('errorMsg');
             if (successMsg) successMsg.classList.add('fade-out');
             if (errorMsg) errorMsg.classList.add('fade-out');
-            setTimeout(function() {
-                if (successMsg) successMsg.style.display = 'none';
-                if (errorMsg) errorMsg.style.display = 'none';
-            }, 3000);
         }, 2000);
 
         function initDragAndDrop() {
             const items = document.querySelectorAll('.order-item');
             items.forEach(item => {
                 item.setAttribute('draggable', 'true');
-                item.addEventListener('dragstart', handleDragStart);
-                item.addEventListener('dragend', handleDragEnd);
-                item.addEventListener('dragover', handleDragOver);
-                item.addEventListener('dragenter', handleDragEnter);
-                item.addEventListener('dragleave', handleDragLeave);
-                item.addEventListener('drop', handleDrop);
-                item.addEventListener('click', (e) => {
-                    if (!e.target.closest('.item-actions')) {
-                        selectItem(item);
+                item.addEventListener('dragstart', e => {
+                    draggedItem = item;
+                    item.classList.add('dragging');
+                });
+                item.addEventListener('dragend', e => {
+                    item.classList.remove('dragging');
+                    document.querySelectorAll('.order-item').forEach(i => i.classList.remove('drag-over'));
+                });
+                item.addEventListener('dragover', e => e.preventDefault());
+                item.addEventListener('dragenter', e => {
+                    if (item !== draggedItem) item.classList.add('drag-over');
+                });
+                item.addEventListener('dragleave', e => item.classList.remove('drag-over'));
+                item.addEventListener('drop', e => {
+                    e.preventDefault();
+                    item.classList.remove('drag-over');
+                    if (draggedItem && item !== draggedItem) {
+                        const parent = document.getElementById('orderList');
+                        const draggedIndex = Array.from(parent.children).indexOf(draggedItem);
+                        const targetIndex = Array.from(parent.children).indexOf(item);
+                        if (draggedIndex < targetIndex) parent.insertBefore(draggedItem, item.nextSibling);
+                        else parent.insertBefore(draggedItem, item);
                     }
                 });
+                item.addEventListener('click', (e) => {
+                    if (!e.target.closest('.item-actions')) selectItem(item);
+                });
             });
-        }
-
-        function handleDragStart(e) {
-            draggedItem = this;
-            this.classList.add('dragging');
-            e.dataTransfer.effectAllowed = 'move';
-        }
-
-        function handleDragEnd(e) {
-            this.classList.remove('dragging');
-            document.querySelectorAll('.order-item').forEach(item => {
-                item.classList.remove('drag-over');
-            });
-        }
-
-        function handleDragOver(e) {
-            e.preventDefault();
-            e.dataTransfer.dropEffect = 'move';
-        }
-
-        function handleDragEnter(e) {
-            e.preventDefault();
-            if (this !== draggedItem) {
-                this.classList.add('drag-over');
-            }
-        }
-
-        function handleDragLeave(e) {
-            this.classList.remove('drag-over');
-        }
-
-        function handleDrop(e) {
-            e.preventDefault();
-            this.classList.remove('drag-over');
-            if (draggedItem && this !== draggedItem) {
-                const parent = document.getElementById('orderList');
-                const draggedIndex = Array.from(parent.children).indexOf(draggedItem);
-                const targetIndex = Array.from(parent.children).indexOf(this);
-                if (draggedIndex < targetIndex) {
-                    parent.insertBefore(draggedItem, this.nextSibling);
-                } else {
-                    parent.insertBefore(draggedItem, this);
-                }
-            }
         }
 
         function selectItem(item) {
             document.querySelectorAll('.order-item').forEach(i => i.classList.remove('selected'));
             item.classList.add('selected');
-            const contentId = item.getAttribute('data-id');
-            loadPreview(contentId);
+            loadPreview(item.getAttribute('data-id'));
         }
 
         function loadPreview(contentId) {
             const previewDiv = document.getElementById('previewContent');
             previewDiv.innerHTML = '<div class="preview-placeholder"><div class="preview-placeholder-icon">⏳</div><div>Loading preview...</div></div>';
 
-            // Use local preview endpoint
-            const url = 'get_preview.php?id=' + contentId + '&t=' + Date.now();
-
-            fetch(url)
-                .then(response => response.json())
+            fetch('get_preview.php?id=' + contentId + '&t=' + Date.now())
+                .then(r => r.json())
                 .then(data => {
-                    if (data.success && data.content) {
-                        displayPreview(data.content, data.slides || []);
-                    } else {
-                        showPreviewError(data.error || 'Content not found');
-                    }
+                    if (data.success && data.content) displayPreview(data.content, data.slides || []);
+                    else showPreviewError(data.error || 'Content not found');
                 })
-                .catch(error => {
-                    console.error('Preview error:', error);
-                    showPreviewError('Failed to load preview');
-                });
+                .catch(() => showPreviewError('Failed to load preview'));
         }
 
         function displayPreview(content, slides) {
             const previewDiv = document.getElementById('previewContent');
-            const baseImageUrl = window.location.origin + '/ettv/';
 
-            switch (content.content_type) {
-                case 'slideshow':
-                    if (slides && slides.length > 0) {
-                        let imagePath = slides[0].image_path;
-                        if (!imagePath.startsWith('http')) {
-                            imagePath = baseImageUrl + imagePath;
-                        }
-                        previewDiv.innerHTML = `
-                            <div style="text-align: center; width: 100%; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; background: #000;">
-                                <img src="${imagePath}" style="max-width: 80%; max-height: 70%; object-fit: contain; border-radius: 10px;" onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22100%22 height=%22100%22 viewBox=%220 0 100 100%22%3E%3Crect width=%22100%22 height=%22100%22 fill=%22%23333%22/%3E%3Ctext x=%2250%22 y=%2250%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23fff%22%3ENo Image%3C/text%3E%3C/svg%3E'">
-                                <div style="color: white; margin-top: 20px; text-align: center;">
-                                    <strong>📸 Slideshow Preview</strong><br>
-                                    ${slides.length} slide(s) | Duration: ${formatDurationPreview(content.display_duration)}
-                                </div>
-                            </div>
-                        `;
-                    } else {
-                        previewDiv.innerHTML = `<div class="preview-placeholder">No slides available</div>`;
-                    }
-                    break;
-
-                case 'youtube':
-                    const videoId = extractYouTubeId(content.content_data);
-                    previewDiv.innerHTML = `
-                        <div style="text-align: center; width: 100%; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; background: #000;">
-                            <img src="https://img.youtube.com/vi/${videoId}/mqdefault.jpg" style="max-width: 80%; border-radius: 10px;">
-                            <div style="color: white; margin-top: 20px; text-align: center;">
-                                <strong>▶️ YouTube Video</strong><br>
-                                Duration: ${formatDurationPreview(content.display_duration)}
-                            </div>
+            if (content.content_type === 'slideshow' && slides && slides.length > 0) {
+                previewDiv.innerHTML = `
+                    <div style="width:100%;height:100%;display:flex;flex-direction:column;justify-content:center;align-items:center;background:#000;">
+                        <img src="${slides[0].image_path}" style="max-width:90%;max-height:80%;object-fit:contain;border-radius:10px;" onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22100%22 height=%22100%22 viewBox=%220 0 100 100%22%3E%3Crect width=%22100%22 height=%22100%22 fill=%22%23333%22/%3E%3Ctext x=%2250%22 y=%2250%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23fff%22%3ENo Image%3C/text%3E%3C/svg%3E'">
+                        <div style="color:white;margin-top:20px;">📸 Slideshow Preview<br>${slides.length} slide(s) | ${formatDurationPreview(content.display_duration)}</div>
+                    </div>`;
+            } else if (content.content_type === 'youtube') {
+                const videoId = extractYouTubeId(content.content_data);
+                previewDiv.innerHTML = `
+                    <div style="width:100%;height:100%;display:flex;flex-direction:column;justify-content:center;align-items:center;background:#000;">
+                        <img src="https://img.youtube.com/vi/${videoId}/mqdefault.jpg" style="max-width:90%;border-radius:10px;">
+                        <div style="color:white;margin-top:20px;">▶️ YouTube Video<br>Duration: ${formatDurationPreview(content.display_duration)}</div>
+                    </div>`;
+            } else if (content.content_type === 'message') {
+                const icons = {
+                    warning: '⚠️',
+                    caution: '⚡',
+                    memo: '📝',
+                    congratulation: '🎉'
+                };
+                previewDiv.innerHTML = `
+                    <div style="width:100%;height:100%;display:flex;justify-content:center;align-items:center;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);">
+                        <div style="background:rgba(255,255,255,0.9);border-radius:20px;padding:30px;text-align:center;">
+                            <div style="font-size:64px;">${icons[content.message_type] || '📝'}</div>
+                            <div style="margin-top:20px;font-weight:bold;">${escapeHtml(content.content_data)}</div>
+                            <div style="margin-top:10px;font-size:12px;">Duration: ${formatDurationPreview(content.display_duration)}</div>
                         </div>
-                    `;
-                    break;
-
-                case 'message':
-                    const icons = {
-                        warning: '⚠️',
-                        caution: '⚡',
-                        memo: '📝',
-                        congratulation: '🎉'
-                    };
-                    const icon = icons[content.message_type] || '📝';
-                    previewDiv.innerHTML = `
-                        <div style="text-align: center; width: 100%; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
-                            <div style="background: rgba(255,255,255,0.9); border-radius: 20px; padding: 30px; max-width: 80%; text-align: center;">
-                                <div style="font-size: 48px; margin-bottom: 20px;">${icon}</div>
-                                <div style="font-size: 18px; font-weight: bold;">${escapeHtml(content.content_data)}</div>
-                                <div style="margin-top: 15px; font-size: 12px; color: #666;">Duration: ${formatDurationPreview(content.display_duration)}</div>
-                            </div>
-                        </div>
-                    `;
-                    break;
-
-                case 'ppt':
-                    previewDiv.innerHTML = `
-                        <div style="text-align: center; width: 100%; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; background: #000;">
-                            <div style="font-size: 64px; margin-bottom: 20px;">📄</div>
-                            <div style="color: white; font-size: 18px; font-weight: bold;">PDF Document</div>
-                            <div style="color: #aaa; margin-top: 10px;">Duration: ${formatDurationPreview(content.display_duration)}</div>
-                            <div style="color: #666; margin-top: 10px; font-size: 12px;">Click "Create New Content" to upload PDF</div>
-                        </div>
-                    `;
-                    break;
-
-                default:
-                    previewDiv.innerHTML = `<div class="preview-placeholder">Preview not available for this content type</div>`;
+                    </div>`;
+            } else if (content.content_type === 'ppt') {
+                previewDiv.innerHTML = `
+                    <div style="width:100%;height:100%;display:flex;flex-direction:column;justify-content:center;align-items:center;background:#000;">
+                        <div style="font-size:64px;">📄</div>
+                        <div style="color:white;margin-top:20px;font-weight:bold;">PDF Document</div>
+                        <div style="color:#aaa;">Duration: ${formatDurationPreview(content.display_duration)}</div>
+                    </div>`;
             }
         }
 
         function formatDurationPreview(seconds) {
             if (seconds < 60) return seconds + ' seconds';
             if (seconds < 3600) return Math.round(seconds / 60) + ' minutes';
-            if (seconds < 86400) return Math.round(seconds / 3600) + ' hours';
-            return Math.round(seconds / 86400) + ' days';
+            return Math.round(seconds / 3600) + ' hours';
         }
 
         function extractYouTubeId(url) {
-            const patterns = [
-                /(?:youtube\.com\/watch\?v=)([^&]+)/,
-                /(?:youtu\.be\/)([^?]+)/,
-                /(?:youtube\.com\/embed\/)([^?]+)/
-            ];
+            const patterns = [/(?:youtube\.com\/watch\?v=)([^&]+)/, /(?:youtu\.be\/)([^?]+)/, /(?:youtube\.com\/embed\/)([^?]+)/];
             for (const pattern of patterns) {
                 const match = url.match(pattern);
                 if (match) return match[1];
@@ -832,28 +713,19 @@ $base_url = (isset($_SERVER['HTTPS']) ? 'https://' : 'http://') . $_SERVER['HTTP
             return div.innerHTML;
         }
 
-        function showPreviewError(message) {
-            document.getElementById('previewContent').innerHTML = `
-                <div class="preview-placeholder">
-                    <div class="preview-placeholder-icon">⚠️</div>
-                    <div>${message || 'Preview not available'}</div>
-                </div>
-            `;
+        function showPreviewError(msg) {
+            document.getElementById('previewContent').innerHTML = `<div class="preview-placeholder"><div class="preview-placeholder-icon">⚠️</div><div>${msg || 'Preview not available'}</div></div>`;
         }
 
         function saveOrder() {
-            if (confirm('Save this display order? The TV will update automatically.')) {
+            if (confirm('Save this display order? ALL content will be activated and play in sequence.')) {
                 const items = document.querySelectorAll('.order-item');
                 const orderData = [];
-                items.forEach((item, index) => {
-                    orderData.push({
-                        id: parseInt(item.getAttribute('data-id'))
-                    });
-                });
-
+                items.forEach((item, idx) => orderData.push({
+                    id: parseInt(item.getAttribute('data-id'))
+                }));
                 const form = document.createElement('form');
                 form.method = 'POST';
-                form.action = '';
                 const input = document.createElement('input');
                 input.type = 'hidden';
                 input.name = 'order_data';
@@ -871,7 +743,6 @@ $base_url = (isset($_SERVER['HTTPS']) ? 'https://' : 'http://') . $_SERVER['HTTP
 
         function editDuration(id, currentDuration) {
             document.getElementById('editContentId').value = id;
-            const durationSelect = document.getElementById('editDuration');
             let selectedValue = '5m';
             if (currentDuration <= 30) selectedValue = '30s';
             else if (currentDuration <= 60) selectedValue = '1m';
@@ -885,25 +756,23 @@ $base_url = (isset($_SERVER['HTTPS']) ? 'https://' : 'http://') . $_SERVER['HTTP
             else if (currentDuration <= 28800) selectedValue = '8h';
             else if (currentDuration <= 43200) selectedValue = '12h';
             else selectedValue = '24h';
-            durationSelect.value = selectedValue;
+            document.getElementById('editDuration').value = selectedValue;
             document.getElementById('editModal').classList.add('active');
         }
 
         function deleteContent(id) {
-            if (confirm('⚠️ Are you sure you want to delete this content?\n\nThis action CANNOT be undone!')) {
-                window.location.href = `?delete_id=${id}`;
-            }
+            if (confirm('⚠️ Delete this content? Cannot be undone!')) window.location.href = `?delete_id=${id}`;
         }
 
         function closeModal() {
             document.getElementById('editModal').classList.remove('active');
         }
 
-        document.addEventListener('DOMContentLoaded', function() {
+        document.addEventListener('DOMContentLoaded', () => {
             initDragAndDrop();
             document.getElementById('saveOrderBtn').addEventListener('click', saveOrder);
-            document.getElementById('editModal').addEventListener('click', function(e) {
-                if (e.target === this) closeModal();
+            document.getElementById('editModal').addEventListener('click', e => {
+                if (e.target === e.currentTarget) closeModal();
             });
             const firstItem = document.querySelector('.order-item');
             if (firstItem) selectItem(firstItem);

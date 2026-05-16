@@ -46,6 +46,13 @@ if ($content['content_type'] === 'slideshow') {
     $slides = $stmt2->fetchAll();
 }
 
+// Fix image paths to be absolute
+foreach ($slides as &$slide) {
+    if (!preg_match('/^https?:\/\//', $slide['image_path'])) {
+        $slide['image_path'] = '/ettv/' . ltrim($slide['image_path'], '/');
+    }
+}
+
 echo json_encode([
     'success' => true,
     'content' => $content,

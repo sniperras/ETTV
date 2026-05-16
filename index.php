@@ -12,8 +12,66 @@ if (!in_array($current_mode, ['lmt', 'bmt'])) {
     $current_mode = 'lmt';
 }
 
-// Get current active content - use display_order for ordering
-$stmt = $pdo->prepare("SELECT * FROM content WHERE admin_role = ? AND is_active = 1 ORDER BY COALESCE(display_order, 999999) ASC, created_at DESC LIMIT 1");
+// Handle API actions directly in index.php
+$action = isset($_GET['action']) ? $_GET['action'] : '';
+
+if ($action === 'get_content') {
+    header('Content-Type: application/json');
+    $id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
+
+    if ($id > 0) {
+        $stmt = $pdo->prepare("SELECT * FROM content WHERE id = ?");
+        $stmt->execute([$id]);
+        $content = $stmt->fetch();
+
+        if ($content) {
+            $slides = [];
+            if ($content['content_type'] === 'slideshow') {
+                $stmt2 = $pdo->prepare("SELECT * FROM content_slides WHERE content_id = ? ORDER BY slide_order ASC");
+                $stmt2->execute([$content['id']]);
+                $slides = $stmt2->fetchAll();
+            }
+            echo json_encode(['success' => true, 'content' => $content, 'slides' => $slides]);
+        } else {
+            echo json_encode(['success' => false, 'error' => 'Content not found']);
+        }
+    } elseif (isset($_GET['mode'])) {
+        $mode = $_GET['mode'];
+        $stmt = $pdo->prepare("SELECT * FROM content WHERE admin_role = ? AND is_active = 1 ORDER BY COALESCE(display_order, 999999) ASC LIMIT 1");
+        $stmt->execute([$mode]);
+        $content = $stmt->fetch();
+
+        if ($content) {
+            $slides = [];
+            if ($content['content_type'] === 'slideshow') {
+                $stmt2 = $pdo->prepare("SELECT * FROM content_slides WHERE content_id = ? ORDER BY slide_order ASC");
+                $stmt2->execute([$content['id']]);
+                $slides = $stmt2->fetchAll();
+            }
+            echo json_encode(['success' => true, 'content' => $content, 'slides' => $slides]);
+        } else {
+            echo json_encode(['success' => false, 'error' => 'No content']);
+        }
+    }
+    exit();
+}
+
+if ($action === 'check_version') {
+    header('Content-Type: application/json');
+    $mode = isset($_GET['mode']) ? $_GET['mode'] : 'lmt';
+    $current_version = isset($_GET['version']) ? (int)$_GET['version'] : 0;
+
+    $stmt = $pdo->prepare("SELECT version FROM content_version WHERE admin_role = ?");
+    $stmt->execute([$mode]);
+    $result = $stmt->fetch();
+    $latest_version = $result ? $result['version'] : 1;
+
+    echo json_encode(['has_update' => $latest_version > $current_version, 'new_version' => $latest_version]);
+    exit();
+}
+
+// Get current active content (first in the chain)
+$stmt = $pdo->prepare("SELECT * FROM content WHERE admin_role = ? AND is_active = 1 ORDER BY COALESCE(display_order, 999999) ASC LIMIT 1");
 $stmt->execute([$current_mode]);
 $current_content = $stmt->fetch();
 
@@ -277,6 +335,42 @@ if ($version) $current_version = $version['version'];
             z-index: 999;
         }
 
+        /* Fallback unmute button */
+        .unmute-btn {
+            position: fixed;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #ff4444;
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            border-radius: 50px;
+            font-size: 18px;
+            font-weight: bold;
+            cursor: pointer;
+            z-index: 2000;
+            animation: pulse 1s infinite;
+            box-shadow: 0 0 20px rgba(255, 68, 68, 0.5);
+        }
+
+        @keyframes pulse {
+            0% {
+                transform: translateX(-50%) scale(1);
+                opacity: 1;
+            }
+
+            50% {
+                transform: translateX(-50%) scale(1.05);
+                opacity: 0.9;
+            }
+
+            100% {
+                transform: translateX(-50%) scale(1);
+                opacity: 1;
+            }
+        }
+
         @media (max-width: 768px) {
             .message-text {
                 font-size: 24px;
@@ -319,71 +413,8 @@ if ($version) $current_version = $version['version'];
         let currentTimeouts = [];
         let pollingInterval = null;
         let currentYouTubePlayer = null;
-        let audioContext = null;
-
-        // Aggressive audio unlock with silent buffer
-        function unlockAudio() {
-            const AudioCtx = window.AudioContext || window.webkitAudioContext;
-            if (!AudioCtx) return false;
-
-            if (!audioContext) {
-                audioContext = new AudioCtx();
-            }
-
-            if (audioContext.state === 'suspended') {
-                audioContext.resume().then(() => {
-                    // Play silent buffer - this fully satisfies Chrome's gesture requirement
-                    try {
-                        const buffer = audioContext.createBuffer(1, 1, 22050);
-                        const source = audioContext.createBufferSource();
-                        source.buffer = buffer;
-                        source.connect(audioContext.destination);
-                        source.start(0);
-                        console.log('Silent audio played — browser audio unlocked');
-                    } catch (e) {
-                        console.log('Silent buffer failed:', e);
-                    }
-                }).catch(e => console.log('AudioContext resume failed:', e));
-                return true;
-            }
-            return false;
-        }
-
-        // Retry unmute up to 10 times
-        function tryUnmute(player, attempts = 0) {
-            if (attempts > 10) {
-                console.warn('Could not unmute after 10 attempts — browser is blocking audio');
-                return;
-            }
-
-            setTimeout(() => {
-                try {
-                    const isMuted = player.isMuted();
-                    if (!isMuted) {
-                        console.log('Already unmuted');
-                        return;
-                    }
-
-                    player.unMute();
-                    player.setVolume(100);
-
-                    // Verify it actually unmuted
-                    setTimeout(() => {
-                        try {
-                            if (player.isMuted()) {
-                                console.log(`Still muted, retry ${attempts + 1}/10`);
-                                tryUnmute(player, attempts + 1);
-                            } else {
-                                console.log('Unmuted successfully on attempt', attempts + 1);
-                            }
-                        } catch (e) {}
-                    }, 500);
-                } catch (e) {
-                    console.log('Unmute attempt failed:', e);
-                    tryUnmute(player, attempts + 1);
-                }
-            }, 500);
-        }
+        let unmuteAttempts = 0;
+        let unmuteButton = null;
 
         function clearAllTimeouts() {
             currentTimeouts.forEach(timeout => clearTimeout(timeout));
@@ -394,6 +425,30 @@ if ($version) $current_version = $version['version'];
                 } catch (e) {}
                 currentYouTubePlayer = null;
             }
+            if (unmuteButton) {
+                unmuteButton.remove();
+                unmuteButton = null;
+            }
+        }
+
+        function showUnmuteButton(player) {
+            if (unmuteButton) return;
+            unmuteButton = document.createElement('button');
+            unmuteButton.className = 'unmute-btn';
+            unmuteButton.innerHTML = '🔊 Tap to Enable Sound';
+            unmuteButton.onclick = () => {
+                try {
+                    player.unMute();
+                    player.setVolume(100);
+                    player.playVideo();
+                    unmuteButton.remove();
+                    unmuteButton = null;
+                    console.log('User manually unmuted');
+                } catch (e) {
+                    console.error('Manual unmute failed:', e);
+                }
+            };
+            document.body.appendChild(unmuteButton);
         }
 
         function updateCurrentContent(data) {
@@ -417,7 +472,7 @@ if ($version) $current_version = $version['version'];
             currentMode = mode;
             document.getElementById('modeIndicator').innerHTML = `Current: ${mode.toUpperCase()}`;
 
-            fetch(`get_content.php?mode=${mode}&t=${Date.now()}`)
+            fetch(`?action=get_content&mode=${mode}&t=${Date.now()}`)
                 .then(response => response.json())
                 .then(data => {
                     if (data.success && data.content) {
@@ -433,17 +488,13 @@ if ($version) $current_version = $version['version'];
         function loadContent() {
             const wrapper = document.getElementById('contentWrapper');
             clearAllTimeouts();
+            unmuteAttempts = 0;
 
             console.log('Loading content type:', currentContent.content_type);
 
             if (!currentContent || !currentContent.content_type) {
                 console.error('Invalid content structure');
                 return;
-            }
-
-            // Unlock audio for YouTube content
-            if (currentContent.content_type === 'youtube') {
-                unlockAudio();
             }
 
             if (currentContent.content_type === 'slideshow') {
@@ -574,89 +625,115 @@ if ($version) $current_version = $version['version'];
 
             wrapper.innerHTML = `<div id="${containerId}" style="width:100%;height:100%;background:#000;"></div>`;
 
-            // Unlock audio aggressively
-            unlockAudio();
-
-            // Wait for DOM to paint before creating player
-            requestAnimationFrame(() => {
-                if (typeof YT !== 'undefined' && YT.Player) {
-                    createYouTubePlayer(containerId, videoId);
-                } else {
-                    window._pendingYouTube = {
-                        containerId,
-                        videoId
-                    };
-                    if (!document.getElementById('yt-api-script')) {
-                        const tag = document.createElement('script');
-                        tag.id = 'yt-api-script';
-                        tag.src = 'https://www.youtube.com/iframe_api';
-                        document.head.appendChild(tag);
-                    }
+            // Function to create player once API is ready
+            const createPlayer = () => {
+                if (currentYouTubePlayer) {
+                    try {
+                        currentYouTubePlayer.destroy();
+                    } catch (e) {}
                 }
-            });
-        }
 
-        function createYouTubePlayer(containerId, videoId) {
-            if (currentYouTubePlayer && typeof currentYouTubePlayer.destroy === 'function') {
-                try {
-                    currentYouTubePlayer.destroy();
-                } catch (e) {}
+                currentYouTubePlayer = new YT.Player(containerId, {
+                    height: '100%',
+                    width: '100%',
+                    videoId: videoId,
+                    playerVars: {
+                        'autoplay': 1,
+                        'mute': 1,
+                        'controls': 0,
+                        'rel': 0,
+                        'modestbranding': 1,
+                        'iv_load_policy': 3,
+                        'enablejsapi': 1,
+                        'playsinline': 1
+                        // NO 'origin' parameter - it causes postMessage errors!
+                    },
+                    events: {
+                        'onReady': function(event) {
+                            console.log('YouTube player ready, playing muted');
+                            event.target.playVideo();
+
+                            // Wait for PLAYING state before attempting unmute
+                            const checkState = setInterval(() => {
+                                try {
+                                    const state = event.target.getPlayerState();
+                                    if (state === YT.PlayerState.PLAYING) {
+                                        clearInterval(checkState);
+                                        console.log('Video is playing, attempting unmute...');
+                                        event.target.unMute();
+                                        event.target.setVolume(100);
+
+                                        // Verify unmute worked
+                                        setTimeout(() => {
+                                            try {
+                                                if (event.target.isMuted()) {
+                                                    console.log('Browser still muted after attempt', unmuteAttempts + 1);
+                                                    unmuteAttempts++;
+                                                    if (unmuteAttempts >= 3) {
+                                                        showUnmuteButton(event.target);
+                                                    } else {
+                                                        // Try again
+                                                        setTimeout(() => {
+                                                            event.target.unMute();
+                                                            event.target.playVideo();
+                                                        }, 1000);
+                                                    }
+                                                } else {
+                                                    console.log('Unmuted successfully!');
+                                                    if (unmuteButton) {
+                                                        unmuteButton.remove();
+                                                        unmuteButton = null;
+                                                    }
+                                                }
+                                            } catch (e) {}
+                                        }, 500);
+                                    }
+                                } catch (e) {}
+                            }, 500);
+
+                            setTimeout(() => clearInterval(checkState), 10000);
+                        },
+                        'onStateChange': function(event) {
+                            if (event.data === YT.PlayerState.ENDED) {
+                                console.log('Video ended, moving to next content');
+                                loadNextContent();
+                            }
+                            // If video gets paused by browser, restart it
+                            if (event.data === YT.PlayerState.PAUSED && unmuteAttempts < 3) {
+                                console.log('Video was paused, restarting...');
+                                event.target.playVideo();
+                            }
+                        },
+                        'onError': function(event) {
+                            console.error('YouTube error:', event.data);
+                            if (currentContent.display_duration > 0) {
+                                setTimeout(() => loadNextContent(), currentContent.display_duration * 1000);
+                            }
+                        }
+                    }
+                });
+            };
+
+            // Load YouTube API if not already loaded
+            if (typeof YT !== 'undefined' && YT.Player) {
+                createPlayer();
+            } else {
+                window._pendingYouTubeCreate = createPlayer;
+                if (!document.getElementById('yt-api-script')) {
+                    const tag = document.createElement('script');
+                    tag.id = 'yt-api-script';
+                    tag.src = 'https://www.youtube.com/iframe_api';
+                    document.head.appendChild(tag);
+                }
             }
 
-            currentYouTubePlayer = new YT.Player(containerId, {
-                height: '100%',
-                width: '100%',
-                videoId: videoId,
-                playerVars: {
-                    'autoplay': 1,
-                    'mute': 1, // Start muted to satisfy browser
-                    'controls': 0,
-                    'rel': 0,
-                    'iv_load_policy': 3,
-                    'enablejsapi': 1,
-                    'origin': window.location.origin
-                },
-                events: {
-                    'onReady': function(event) {
-                        console.log('YouTube player ready');
-                        event.target.mute();
-                        event.target.playVideo();
-                        // Start trying to unmute
-                        tryUnmute(event.target);
-                    },
-                    'onStateChange': function(event) {
-                        // PLAYING state (1) is the perfect moment to unmute
-                        if (event.data === YT.PlayerState.PLAYING) {
-                            console.log('Video playing, attempting unmute');
-                            tryUnmute(event.target);
-                        }
-                        if (event.data === YT.PlayerState.ENDED) {
-                            console.log('Video ended, replaying');
-                            event.target.playVideo();
-                        }
-                    },
-                    'onError': function(event) {
-                        console.error('YouTube error:', event.data);
-                        fallbackYouTubeEmbed(containerId, videoId);
-                    }
-                }
-            });
-
-            // Set duration timer
+            // Fallback timer to move to next content
             if (currentContent.display_duration && currentContent.display_duration > 0) {
                 const timeoutId = setTimeout(() => {
-                    console.log('Video duration expired, loading next content');
+                    console.log('Video duration expired (fallback), loading next content');
                     loadNextContent();
                 }, currentContent.display_duration * 1000);
                 currentTimeouts.push(timeoutId);
-            }
-        }
-
-        function fallbackYouTubeEmbed(containerId, videoId) {
-            const container = document.getElementById(containerId);
-            if (container) {
-                const embedUrl = `https://www.youtube.com/embed/${videoId}?autoplay=1&mute=1&controls=0&rel=0&modestbranding=1&enablejsapi=1&origin=${encodeURIComponent(window.location.origin)}&nocache=${Date.now()}`;
-                container.innerHTML = `<iframe src="${embedUrl}" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen style="width:100%;height:100%;"></iframe>`;
             }
         }
 
@@ -711,12 +788,12 @@ if ($version) $current_version = $version['version'];
             console.log('Loading next content, next_content_id:', currentContent.next_content_id);
 
             if (!isNaN(nextId) && nextId > 0) {
-                fetch(`get_content.php?id=${nextId}&t=${Date.now()}`)
+                fetch(`?action=get_content&id=${nextId}&t=${Date.now()}`)
                     .then(response => response.json())
                     .then(data => {
                         if (data.success && data.content) {
                             updateCurrentContent(data);
-                            setTimeout(() => loadContent(), 100);
+                            setTimeout(() => loadContent(), 200);
                         } else {
                             console.log('Next content not found, waiting for admin');
                         }
@@ -752,13 +829,13 @@ if ($version) $current_version = $version['version'];
             if (pollingInterval) clearInterval(pollingInterval);
 
             pollingInterval = setInterval(function() {
-                fetch(`check_version.php?mode=${currentMode}&version=${currentVersion}`)
+                fetch(`?action=check_version&mode=${currentMode}&version=${currentVersion}`)
                     .then(response => response.json())
                     .then(data => {
                         if (data.has_update) {
                             console.log('Update detected, refreshing content');
                             currentVersion = data.new_version;
-                            fetch(`get_content.php?mode=${currentMode}&t=${Date.now()}`)
+                            fetch(`?action=get_content&mode=${currentMode}&t=${Date.now()}`)
                                 .then(response => response.json())
                                 .then(data => {
                                     if (data.success && data.content) {
@@ -776,30 +853,15 @@ if ($version) $current_version = $version['version'];
         // YouTube API callback
         window.onYouTubeIframeAPIReady = function() {
             console.log('YouTube API ready');
-            if (window._pendingYouTube) {
-                const {
-                    containerId,
-                    videoId
-                } = window._pendingYouTube;
-                window._pendingYouTube = null;
-                createYouTubePlayer(containerId, videoId);
+            if (window._pendingYouTubeCreate) {
+                const create = window._pendingYouTubeCreate;
+                window._pendingYouTubeCreate = null;
+                create();
             }
         };
 
         // Initialize
         document.addEventListener('DOMContentLoaded', function() {
-            // Unlock audio aggressively on page load
-            unlockAudio();
-
-            // Also try to unlock on first user interaction (backup)
-            const unlockOnInteraction = () => {
-                unlockAudio();
-                document.removeEventListener('click', unlockOnInteraction);
-                document.removeEventListener('touchstart', unlockOnInteraction);
-            };
-            document.addEventListener('click', unlockOnInteraction);
-            document.addEventListener('touchstart', unlockOnInteraction);
-
             loadContent();
             startPolling();
 

@@ -15,6 +15,7 @@ $error = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
         $content_type = $_POST['content_type'];
+        $description = isset($_POST['description']) ? trim($_POST['description']) : '';
         $display_duration = convertToSeconds($_POST['display_duration']);
         $loop_count = isset($_POST['loop_count']) ? (int)$_POST['loop_count'] : 1;
         $next_content_id = !empty($_POST['next_content_id']) ? (int)$_POST['next_content_id'] : null;
@@ -55,14 +56,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
             }
 
-            // FIRST: Deactivate all existing content for this admin
-            $stmt_deactivate = $pdo->prepare("UPDATE content SET is_active = 0 WHERE admin_role = 'lmt'");
-            $stmt_deactivate->execute();
-
             if ($layout_type === 'slideshow') {
                 // Traditional slideshow - store in content_slides table
-                $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, display_duration, loop_count, next_content_id, is_active) VALUES (?, ?, ?, ?, ?, 1)");
-                $stmt->execute(['lmt', $content_type, $display_duration, $loop_count, $next_content_id]);
+                $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, description, display_duration, loop_count, next_content_id, is_active) VALUES (?, ?, ?, ?, ?, ?, 1)");
+                $stmt->execute(['lmt', $content_type, $description, $display_duration, $loop_count, $next_content_id]);
                 $content_id = $pdo->lastInsertId();
 
                 // Insert each slide
@@ -79,8 +76,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'images' => $uploaded_images
                 ]);
 
-                $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, content_data, display_duration, loop_count, next_content_id, is_active) VALUES (?, ?, ?, ?, ?, ?, 1)");
-                $stmt->execute(['lmt', $content_type, $content_data, $display_duration, $loop_count, $next_content_id]);
+                $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, description, content_data, display_duration, loop_count, next_content_id, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, 1)");
+                $stmt->execute(['lmt', $content_type, $description, $content_data, $display_duration, $loop_count, $next_content_id]);
             }
         } elseif ($content_type === 'ppt') {
             // Handle PPT/PDF upload
@@ -94,28 +91,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             $content_data = json_encode(['file_path' => $file_path]);
 
-            // Deactivate all existing content first
-            $stmt_deactivate = $pdo->prepare("UPDATE content SET is_active = 0 WHERE admin_role = 'lmt'");
-            $stmt_deactivate->execute();
-
-            $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, content_data, display_duration, loop_count, next_content_id, is_active) VALUES (?, ?, ?, ?, ?, ?, 1)");
-            $stmt->execute(['lmt', $content_type, $content_data, $display_duration, $loop_count, $next_content_id]);
+            $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, description, content_data, display_duration, loop_count, next_content_id, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, 1)");
+            $stmt->execute(['lmt', $content_type, $description, $content_data, $display_duration, $loop_count, $next_content_id]);
         } elseif ($content_type === 'youtube') {
             $youtube_link = filter_var($_POST['youtube_link'], FILTER_VALIDATE_URL);
             if (!$youtube_link) {
                 throw new Exception('Invalid YouTube URL');
             }
 
-            // Extract video ID and create embed URL without controls
-            $video_id = extractYouTubeID($youtube_link);
-            $embed_url = "https://www.youtube.com/embed/{$video_id}?autoplay=1&controls=0&showinfo=0&rel=0&modestbranding=1";
-
-            // Deactivate all existing content first
-            $stmt_deactivate = $pdo->prepare("UPDATE content SET is_active = 0 WHERE admin_role = 'lmt'");
-            $stmt_deactivate->execute();
-
             $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, content_data, display_duration, loop_count, next_content_id, is_active) VALUES (?, ?, ?, ?, ?, ?, 1)");
-            $stmt->execute(['lmt', $content_type, $embed_url, $display_duration, $loop_count, $next_content_id]);
+            $stmt->execute(['lmt', $content_type, $youtube_link, $display_duration, $loop_count, $next_content_id]);
         } elseif ($content_type === 'message') {
             $message_text = htmlspecialchars($_POST['message_text'], ENT_QUOTES, 'UTF-8');
             $message_type = $_POST['message_type'];
@@ -124,10 +109,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (!in_array($message_type, $allowed_types)) {
                 $message_type = 'memo';
             }
-
-            // Deactivate all existing content first
-            $stmt_deactivate = $pdo->prepare("UPDATE content SET is_active = 0 WHERE admin_role = 'lmt'");
-            $stmt_deactivate->execute();
 
             $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, content_data, message_type, display_duration, loop_count, next_content_id, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, 1)");
             $stmt->execute(['lmt', $content_type, $message_text, $message_type, $display_duration, $loop_count, $next_content_id]);
@@ -139,7 +120,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         $pdo->commit();
 
-        // PRG: Redirect to prevent resubmission on refresh
         $_SESSION['flash_success'] = "Content published successfully! All TV displays will update in real-time.";
         header('Location: ' . $_SERVER['PHP_SELF']);
         exit();
@@ -181,26 +161,13 @@ function convertToSeconds($duration_str)
     return $duration_map[$duration_str] ?? 600;
 }
 
-function extractYouTubeID($url)
-{
-    $patterns = [
-        '/(?:youtube\.com\/watch\?v=)([^&]+)/',
-        '/(?:youtu\.be\/)([^?]+)/',
-        '/(?:youtube\.com\/embed\/)([^?]+)/'
-    ];
-
-    foreach ($patterns as $pattern) {
-        if (preg_match($pattern, $url, $matches)) {
-            return $matches[1];
-        }
-    }
-    return $url;
-}
-
-// Get existing content for dropdown (only inactive content for "next content" selection)
-$stmt = $pdo->prepare("SELECT id, content_type, created_at FROM content WHERE admin_role = 'lmt' AND is_active = 0 ORDER BY created_at DESC LIMIT 50");
+// Get all content ordered by display_order (same as order manager)
+$stmt = $pdo->prepare("SELECT id, content_type, description, created_at, display_order 
+                       FROM content 
+                       WHERE admin_role = 'lmt' 
+                       ORDER BY COALESCE(display_order, 999999) ASC, id ASC");
 $stmt->execute();
-$existing_content = $stmt->fetchAll();
+$all_content = $stmt->fetchAll();
 ?>
 
 <!DOCTYPE html>
@@ -229,9 +196,20 @@ $existing_content = $stmt->fetchAll();
             display: flex;
             justify-content: space-between;
             align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
         }
 
-        .logout-btn {
+        .header h1 {
+            font-size: 24px;
+        }
+
+        .header-buttons {
+            display: flex;
+            gap: 15px;
+        }
+
+        .header-btn {
             background: rgba(255, 255, 255, 0.2);
             color: white;
             padding: 10px 20px;
@@ -240,7 +218,7 @@ $existing_content = $stmt->fetchAll();
             transition: background 0.3s;
         }
 
-        .logout-btn:hover {
+        .header-btn:hover {
             background: rgba(255, 255, 255, 0.3);
         }
 
@@ -260,6 +238,8 @@ $existing_content = $stmt->fetchAll();
         h2 {
             margin-bottom: 20px;
             color: #333;
+            border-bottom: 3px solid #667eea;
+            padding-bottom: 10px;
         }
 
         .form-group {
@@ -271,6 +251,11 @@ $existing_content = $stmt->fetchAll();
             margin-bottom: 8px;
             font-weight: 600;
             color: #555;
+        }
+
+        .required:after {
+            content: " *";
+            color: red;
         }
 
         select,
@@ -293,7 +278,7 @@ $existing_content = $stmt->fetchAll();
 
         textarea {
             resize: vertical;
-            min-height: 100px;
+            min-height: 80px;
         }
 
         .image-inputs,
@@ -392,16 +377,47 @@ $existing_content = $stmt->fetchAll();
             font-size: 12px;
             color: #666;
         }
+
+        .description-hint {
+            font-size: 11px;
+            color: #999;
+            margin-top: 5px;
+        }
+
+        .description-field {
+            display: none;
+        }
+
+        .description-field.active {
+            display: block;
+        }
+
+        @media (max-width: 768px) {
+            .header {
+                flex-direction: column;
+                text-align: center;
+            }
+
+            .container {
+                margin: 20px auto;
+                padding: 10px;
+            }
+
+            .form-card {
+                padding: 20px;
+            }
+        }
     </style>
 </head>
 
 <body>
 
     <div class="header">
-        <h1>LMT Admin Dashboard</h1>
-        <a href="../lmt/lmtadmin_order.php" class="logout-btn">Manage the Display</a>
-        <a href="../admin/logout.php" class="logout-btn">Logout</a>
-
+        <h1>🎬 LMT Admin Dashboard</h1>
+        <div class="header-buttons">
+            <a href="lmtadmin_order.php" class="header-btn">📋 Manage Display Order</a>
+            <a href="../admin/logout.php" class="header-btn">🚪 Logout</a>
+        </div>
     </div>
 
     <div class="container">
@@ -414,17 +430,24 @@ $existing_content = $stmt->fetchAll();
         <?php endif; ?>
 
         <div class="form-card">
-            <h2>Create New Display Content</h2>
+            <h2>➕ Create New Display Content</h2>
             <form method="POST" enctype="multipart/form-data" id="contentForm">
                 <div class="form-group">
-                    <label>Content Type *</label>
+                    <label class="required">Content Type</label>
                     <select name="content_type" id="contentType" required>
                         <option value="">Select Content Type</option>
-                        <option value="slideshow">Images / Slideshow</option>
-                        <option value="youtube">YouTube Video</option>
-                        <option value="message">Custom Message</option>
-                        <option value="ppt">PDF Document</option>
+                        <option value="slideshow">🖼️ Images / Slideshow</option>
+                        <option value="youtube">▶️ YouTube Video</option>
+                        <option value="message">💬 Custom Message</option>
+                        <option value="ppt">📄 PDF Document</option>
                     </select>
+                </div>
+
+                <!-- Description Field - Only for Images/Slideshow and PDF -->
+                <div class="form-group description-field" id="descriptionField">
+                    <label>📝 Description (Optional)</label>
+                    <textarea name="description" id="description" placeholder="Enter a description for this content (e.g., 'Product Launch Images', 'Annual Report PDF', etc.)" maxlength="500"></textarea>
+                    <div class="description-hint">This description will help you identify this content in the order manager and next content dropdown</div>
                 </div>
 
                 <div class="form-group" id="layoutTypeGroup" style="display: none;">
@@ -441,7 +464,7 @@ $existing_content = $stmt->fetchAll();
                 </div>
 
                 <div id="slideshowUpload" class="image-inputs">
-                    <label>Upload Images</label>
+                    <label>📸 Upload Images</label>
                     <div id="imagesContainer">
                         <div class="image-item" data-index="0">
                             <label>Image 1</label>
@@ -459,7 +482,7 @@ $existing_content = $stmt->fetchAll();
 
                 <div id="pptUpload" class="ppt-inputs">
                     <div class="form-group">
-                        <label>PDF Document</label>
+                        <label>📑 PDF Document</label>
                         <input type="file" name="ppt_file" accept=".pdf">
                         <div class="info-text">Upload PDF document. For PowerPoint files, convert to PDF first.</div>
                     </div>
@@ -467,7 +490,7 @@ $existing_content = $stmt->fetchAll();
 
                 <div id="youtubeLink" class="image-inputs">
                     <div class="form-group">
-                        <label>YouTube URL</label>
+                        <label>🎬 YouTube URL</label>
                         <input type="url" name="youtube_link" placeholder="https://www.youtube.com/watch?v=...">
                         <div class="info-text">Video will play without controls. Duration is controlled by "Overall Display Duration" below.</div>
                     </div>
@@ -475,7 +498,7 @@ $existing_content = $stmt->fetchAll();
 
                 <div id="customMessage" class="image-inputs">
                     <div class="form-group">
-                        <label>Message Text</label>
+                        <label>💬 Message Text</label>
                         <textarea name="message_text" placeholder="Enter your message here..." maxlength="500"></textarea>
                     </div>
                     <div class="form-group">
@@ -490,7 +513,7 @@ $existing_content = $stmt->fetchAll();
                 </div>
 
                 <div class="form-group">
-                    <label>Overall Display Duration</label>
+                    <label>⏱️ Overall Display Duration</label>
                     <select name="display_duration" class="duration-select">
                         <option value="30s">30 seconds</option>
                         <option value="1m">1 minute</option>
@@ -508,26 +531,46 @@ $existing_content = $stmt->fetchAll();
                     <div class="info-text">How long to show this content before moving to next content</div>
                 </div>
 
-                <div class="form-group" id="loopGroup" style="display: none;">
-                    <label>Loop Count (for videos)</label>
-                    <input type="number" name="loop_count" value="1" min="1" max="100">
-                    <div class="info-text">How many times to loop the video</div>
-                </div>
+
 
                 <div class="form-group">
-                    <label>Next Content (after expiry)</label>
+                    <label>➡️ Next Content (after expiry)</label>
                     <select name="next_content_id">
-                        <option value="">Default Display</option>
-                        <?php foreach ($existing_content as $content): ?>
+                        <option value="">— Default Display —</option>
+                        <?php
+                        $position = 1;
+                        foreach ($all_content as $content):
+                            // Skip the current content if it's being edited (for future use)
+                        ?>
                             <option value="<?php echo $content['id']; ?>">
-                                <?php echo ucfirst($content['content_type']) . " - " . date('Y-m-d H:i', strtotime($content['created_at'])); ?>
+                                <?php
+                                // Show position number from display_order
+                                $order_num = $content['display_order'] !== null ? ($content['display_order'] + 1) : $position;
+
+                                $type_icon = '';
+                                if ($content['content_type'] === 'slideshow') $type_icon = '🖼️';
+                                elseif ($content['content_type'] === 'youtube') $type_icon = '▶️';
+                                elseif ($content['content_type'] === 'message') $type_icon = '💬';
+                                else $type_icon = '📄';
+
+                                $display_text = '#' . $order_num . ' ' . $type_icon . ' ' . ucfirst($content['content_type']);
+                                if (!empty($content['description'])) {
+                                    $display_text .= ' - ' . htmlspecialchars(substr($content['description'], 0, 50));
+                                } else {
+                                    $display_text .= ' - ' . date('Y-m-d H:i', strtotime($content['created_at']));
+                                }
+                                echo $display_text;
+                                ?>
                             </option>
-                        <?php endforeach; ?>
+                        <?php
+                            $position++;
+                        endforeach;
+                        ?>
                     </select>
-                    <div class="info-text">Select what to show after this content expires</div>
+                    <div class="info-text">Select what to show after this content expires (ordered by your display sequence)</div>
                 </div>
 
-                <button type="submit">Publish to TV</button>
+                <button type="submit">🚀 Publish to TV</button>
             </form>
         </div>
     </div>
@@ -543,6 +586,17 @@ $existing_content = $stmt->fetchAll();
         const loopGroup = document.getElementById('loopGroup');
         const layoutTypeGroup = document.getElementById('layoutTypeGroup');
         const layoutType = document.getElementById('layoutType');
+        const descriptionField = document.getElementById('descriptionField');
+
+        function updateDescriptionVisibility() {
+            const selectedType = contentType.value;
+            if (selectedType === 'slideshow' || selectedType === 'ppt') {
+                descriptionField.classList.add('active');
+            } else {
+                descriptionField.classList.remove('active');
+                document.getElementById('description').value = '';
+            }
+        }
 
         function updateDurationVisibility() {
             const isSlideshow = layoutType.value === 'slideshow';
@@ -571,6 +625,8 @@ $existing_content = $stmt->fetchAll();
             youtubeLink.classList.remove('active');
             customMessage.classList.remove('active');
 
+            updateDescriptionVisibility();
+
             if (this.value === 'slideshow') {
                 slideshowUpload.classList.add('active');
                 layoutTypeGroup.style.display = 'block';
@@ -583,7 +639,7 @@ $existing_content = $stmt->fetchAll();
             } else if (this.value === 'youtube') {
                 youtubeLink.classList.add('active');
                 layoutTypeGroup.style.display = 'none';
-                loopGroup.style.display = 'none';
+                loopGroup.style.display = 'block';
             } else if (this.value === 'message') {
                 customMessage.classList.add('active');
                 layoutTypeGroup.style.display = 'none';
@@ -658,23 +714,6 @@ $existing_content = $stmt->fetchAll();
                     e.preventDefault();
                     return;
                 }
-
-                for (let input of fileInputs) {
-                    if (input.files.length > 0) {
-                        const file = input.files[0];
-                        const validTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/bmp'];
-                        if (!validTypes.includes(file.type)) {
-                            alert('Invalid file type. Please upload JPG, PNG, GIF, or BMP images only.');
-                            e.preventDefault();
-                            return;
-                        }
-                        if (file.size > 10 * 1024 * 1024) {
-                            alert('File too large. Maximum size is 10MB per image.');
-                            e.preventDefault();
-                            return;
-                        }
-                    }
-                }
             } else if (type === 'ppt') {
                 const pptFile = document.querySelector('input[name="ppt_file"]');
                 if (!pptFile || !pptFile.files.length) {
@@ -696,8 +735,25 @@ $existing_content = $stmt->fetchAll();
             }
         });
 
+        // Initialize
         loopGroup.style.display = 'none';
         layoutTypeGroup.style.display = 'none';
+        descriptionField.classList.remove('active');
+
+        setTimeout(function() {
+            const successMsg = document.querySelector('.success');
+            const errorMsg = document.querySelector('.error');
+            if (successMsg) {
+                setTimeout(() => {
+                    successMsg.style.display = 'none';
+                }, 5000);
+            }
+            if (errorMsg) {
+                setTimeout(() => {
+                    errorMsg.style.display = 'none';
+                }, 5000);
+            }
+        }, 1000);
     </script>
 </body>
 
