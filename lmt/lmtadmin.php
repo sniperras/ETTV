@@ -29,10 +29,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Start transaction
         $pdo->beginTransaction();
 
-        // FIRST: Set all existing content as inactive for this admin role
-        $stmt_deactivate = $pdo->prepare("UPDATE content SET is_active = 0 WHERE admin_role = 'lmt'");
-        $stmt_deactivate->execute();
-
         if ($content_type === 'slideshow') {
             // Handle slideshow with multiple images
             if (!isset($_FILES['images']) || empty($_FILES['images']['tmp_name'][0])) {
@@ -58,6 +54,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ];
                 }
             }
+
+            // FIRST: Deactivate all existing content for this admin
+            $stmt_deactivate = $pdo->prepare("UPDATE content SET is_active = 0 WHERE admin_role = 'lmt'");
+            $stmt_deactivate->execute();
 
             if ($layout_type === 'slideshow') {
                 // Traditional slideshow - store in content_slides table
@@ -94,6 +94,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             $content_data = json_encode(['file_path' => $file_path]);
 
+            // Deactivate all existing content first
+            $stmt_deactivate = $pdo->prepare("UPDATE content SET is_active = 0 WHERE admin_role = 'lmt'");
+            $stmt_deactivate->execute();
+
             $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, content_data, display_duration, loop_count, next_content_id, is_active) VALUES (?, ?, ?, ?, ?, ?, 1)");
             $stmt->execute(['lmt', $content_type, $content_data, $display_duration, $loop_count, $next_content_id]);
         } elseif ($content_type === 'youtube') {
@@ -106,6 +110,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $video_id = extractYouTubeID($youtube_link);
             $embed_url = "https://www.youtube.com/embed/{$video_id}?autoplay=1&controls=0&showinfo=0&rel=0&modestbranding=1";
 
+            // Deactivate all existing content first
+            $stmt_deactivate = $pdo->prepare("UPDATE content SET is_active = 0 WHERE admin_role = 'lmt'");
+            $stmt_deactivate->execute();
+
             $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, content_data, display_duration, loop_count, next_content_id, is_active) VALUES (?, ?, ?, ?, ?, ?, 1)");
             $stmt->execute(['lmt', $content_type, $embed_url, $display_duration, $loop_count, $next_content_id]);
         } elseif ($content_type === 'message') {
@@ -116,6 +124,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (!in_array($message_type, $allowed_types)) {
                 $message_type = 'memo';
             }
+
+            // Deactivate all existing content first
+            $stmt_deactivate = $pdo->prepare("UPDATE content SET is_active = 0 WHERE admin_role = 'lmt'");
+            $stmt_deactivate->execute();
 
             $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, content_data, message_type, display_duration, loop_count, next_content_id, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, 1)");
             $stmt->execute(['lmt', $content_type, $message_text, $message_type, $display_duration, $loop_count, $next_content_id]);
