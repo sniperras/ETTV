@@ -320,6 +320,20 @@ if ($version) $current_version = $version['version'];
         let pollingInterval = null;
         let currentYouTubePlayer = null;
 
+        // Audio context for unlocking sound on page load
+        let audioContext = null;
+
+        function unlockAudio() {
+            if (audioContext) return;
+            const AudioCtx = window.AudioContext || window.webkitAudioContext;
+            if (AudioCtx) {
+                audioContext = new AudioCtx();
+                audioContext.resume().then(() => {
+                    console.log('AudioContext resumed — sound unlocked for page');
+                }).catch(e => console.log('AudioContext resume failed:', e));
+            }
+        }
+
         function clearAllTimeouts() {
             currentTimeouts.forEach(timeout => clearTimeout(timeout));
             currentTimeouts = [];
@@ -375,6 +389,9 @@ if ($version) $current_version = $version['version'];
                 console.error('Invalid content structure');
                 return;
             }
+
+            // Unlock audio when any content loads (especially for YouTube)
+            unlockAudio();
 
             if (currentContent.content_type === 'slideshow') {
                 if (currentLayoutData && currentLayoutData.type && currentLayoutData.images) {
@@ -536,7 +553,7 @@ if ($version) $current_version = $version['version'];
                 videoId: videoId,
                 playerVars: {
                     'autoplay': 1,
-                    'mute': 1, // REQUIRED for autoplay in browsers
+                    'mute': 1, // Start muted to satisfy browser autoplay policy
                     'controls': 0,
                     'showinfo': 0,
                     'rel': 0,
@@ -547,9 +564,21 @@ if ($version) $current_version = $version['version'];
                 },
                 events: {
                     'onReady': function(event) {
-                        console.log('YouTube player ready, playing video');
+                        console.log('YouTube player ready, playing muted');
                         event.target.mute();
                         event.target.playVideo();
+
+                        // Browser is now satisfied — muted play counts as "interaction started"
+                        // Unmute after a short delay once playback has started
+                        setTimeout(() => {
+                            try {
+                                event.target.unMute();
+                                event.target.setVolume(100);
+                                console.log('Auto-unmuted successfully');
+                            } catch (e) {
+                                console.log('Could not unmute:', e);
+                            }
+                        }, 500);
 
                         if (currentContent.display_duration && currentContent.display_duration > 0) {
                             const timeoutId = setTimeout(() => {
@@ -646,15 +675,12 @@ if ($version) $current_version = $version['version'];
                             setTimeout(() => loadContent(), 100);
                         } else {
                             console.log('Next content not found, waiting for admin to publish new content');
-                            // Don't loop - let polling handle updates
                         }
                     })
                     .catch(error => {
                         console.error('Error loading next content:', error);
                     });
             } else {
-                // No next content - content chain ended, stop here
-                // Polling will pick up new content when admin publishes
                 console.log('Content chain ended, waiting for new content from admin');
             }
         }
@@ -700,7 +726,7 @@ if ($version) $current_version = $version['version'];
                         }
                     })
                     .catch(error => console.error('Polling error:', error));
-            }, 5000); // Check every 5 seconds
+            }, 5000);
         }
 
         // YouTube API callback
@@ -718,6 +744,18 @@ if ($version) $current_version = $version['version'];
 
         // Initialize
         document.addEventListener('DOMContentLoaded', function() {
+            // Unlock audio on first user interaction (optional, but good fallback)
+            const unlockOnFirstTouch = () => {
+                unlockAudio();
+                document.removeEventListener('click', unlockOnFirstTouch);
+                document.removeEventListener('touchstart', unlockOnFirstTouch);
+            };
+            document.addEventListener('click', unlockOnFirstTouch);
+            document.addEventListener('touchstart', unlockOnFirstTouch);
+
+            // Also try to unlock immediately (AudioContext resume)
+            unlockAudio();
+
             loadContent();
             startPolling();
 
