@@ -319,19 +319,70 @@ if ($version) $current_version = $version['version'];
         let currentTimeouts = [];
         let pollingInterval = null;
         let currentYouTubePlayer = null;
-
-        // Audio context for unlocking sound on page load
         let audioContext = null;
 
+        // Aggressive audio unlock with silent buffer
         function unlockAudio() {
-            if (audioContext) return;
             const AudioCtx = window.AudioContext || window.webkitAudioContext;
-            if (AudioCtx) {
+            if (!AudioCtx) return false;
+
+            if (!audioContext) {
                 audioContext = new AudioCtx();
-                audioContext.resume().then(() => {
-                    console.log('AudioContext resumed — sound unlocked for page');
-                }).catch(e => console.log('AudioContext resume failed:', e));
             }
+
+            if (audioContext.state === 'suspended') {
+                audioContext.resume().then(() => {
+                    // Play silent buffer - this fully satisfies Chrome's gesture requirement
+                    try {
+                        const buffer = audioContext.createBuffer(1, 1, 22050);
+                        const source = audioContext.createBufferSource();
+                        source.buffer = buffer;
+                        source.connect(audioContext.destination);
+                        source.start(0);
+                        console.log('Silent audio played — browser audio unlocked');
+                    } catch (e) {
+                        console.log('Silent buffer failed:', e);
+                    }
+                }).catch(e => console.log('AudioContext resume failed:', e));
+                return true;
+            }
+            return false;
+        }
+
+        // Retry unmute up to 10 times
+        function tryUnmute(player, attempts = 0) {
+            if (attempts > 10) {
+                console.warn('Could not unmute after 10 attempts — browser is blocking audio');
+                return;
+            }
+
+            setTimeout(() => {
+                try {
+                    const isMuted = player.isMuted();
+                    if (!isMuted) {
+                        console.log('Already unmuted');
+                        return;
+                    }
+
+                    player.unMute();
+                    player.setVolume(100);
+
+                    // Verify it actually unmuted
+                    setTimeout(() => {
+                        try {
+                            if (player.isMuted()) {
+                                console.log(`Still muted, retry ${attempts + 1}/10`);
+                                tryUnmute(player, attempts + 1);
+                            } else {
+                                console.log('Unmuted successfully on attempt', attempts + 1);
+                            }
+                        } catch (e) {}
+                    }, 500);
+                } catch (e) {
+                    console.log('Unmute attempt failed:', e);
+                    tryUnmute(player, attempts + 1);
+                }
+            }, 500);
         }
 
         function clearAllTimeouts() {
@@ -390,8 +441,10 @@ if ($version) $current_version = $version['version'];
                 return;
             }
 
-            // Unlock audio when any content loads (especially for YouTube)
-            unlockAudio();
+            // Unlock audio for YouTube content
+            if (currentContent.content_type === 'youtube') {
+                unlockAudio();
+            }
 
             if (currentContent.content_type === 'slideshow') {
                 if (currentLayoutData && currentLayoutData.type && currentLayoutData.images) {
@@ -521,6 +574,9 @@ if ($version) $current_version = $version['version'];
 
             wrapper.innerHTML = `<div id="${containerId}" style="width:100%;height:100%;background:#000;"></div>`;
 
+            // Unlock audio aggressively
+            unlockAudio();
+
             // Wait for DOM to paint before creating player
             requestAnimationFrame(() => {
                 if (typeof YT !== 'undefined' && YT.Player) {
@@ -553,42 +609,27 @@ if ($version) $current_version = $version['version'];
                 videoId: videoId,
                 playerVars: {
                     'autoplay': 1,
-                    'mute': 1, // Start muted to satisfy browser autoplay policy
+                    'mute': 1, // Start muted to satisfy browser
                     'controls': 0,
-                    'showinfo': 0,
                     'rel': 0,
-                    'modestbranding': 1,
                     'iv_load_policy': 3,
                     'enablejsapi': 1,
                     'origin': window.location.origin
                 },
                 events: {
                     'onReady': function(event) {
-                        console.log('YouTube player ready, playing muted');
+                        console.log('YouTube player ready');
                         event.target.mute();
                         event.target.playVideo();
-
-                        // Browser is now satisfied — muted play counts as "interaction started"
-                        // Unmute after a short delay once playback has started
-                        setTimeout(() => {
-                            try {
-                                event.target.unMute();
-                                event.target.setVolume(100);
-                                console.log('Auto-unmuted successfully');
-                            } catch (e) {
-                                console.log('Could not unmute:', e);
-                            }
-                        }, 500);
-
-                        if (currentContent.display_duration && currentContent.display_duration > 0) {
-                            const timeoutId = setTimeout(() => {
-                                console.log('Video duration expired, loading next content');
-                                loadNextContent();
-                            }, currentContent.display_duration * 1000);
-                            currentTimeouts.push(timeoutId);
-                        }
+                        // Start trying to unmute
+                        tryUnmute(event.target);
                     },
                     'onStateChange': function(event) {
+                        // PLAYING state (1) is the perfect moment to unmute
+                        if (event.data === YT.PlayerState.PLAYING) {
+                            console.log('Video playing, attempting unmute');
+                            tryUnmute(event.target);
+                        }
                         if (event.data === YT.PlayerState.ENDED) {
                             console.log('Video ended, replaying');
                             event.target.playVideo();
@@ -600,18 +641,22 @@ if ($version) $current_version = $version['version'];
                     }
                 }
             });
+
+            // Set duration timer
+            if (currentContent.display_duration && currentContent.display_duration > 0) {
+                const timeoutId = setTimeout(() => {
+                    console.log('Video duration expired, loading next content');
+                    loadNextContent();
+                }, currentContent.display_duration * 1000);
+                currentTimeouts.push(timeoutId);
+            }
         }
 
         function fallbackYouTubeEmbed(containerId, videoId) {
             const container = document.getElementById(containerId);
             if (container) {
-                const embedUrl = `https://www.youtube.com/embed/${videoId}?autoplay=1&mute=1&controls=0&showinfo=0&rel=0&modestbranding=1&enablejsapi=1&origin=${encodeURIComponent(window.location.origin)}&nocache=${Date.now()}`;
+                const embedUrl = `https://www.youtube.com/embed/${videoId}?autoplay=1&mute=1&controls=0&rel=0&modestbranding=1&enablejsapi=1&origin=${encodeURIComponent(window.location.origin)}&nocache=${Date.now()}`;
                 container.innerHTML = `<iframe src="${embedUrl}" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen style="width:100%;height:100%;"></iframe>`;
-
-                if (currentContent.display_duration && currentContent.display_duration > 0) {
-                    const timeoutId = setTimeout(() => loadNextContent(), currentContent.display_duration * 1000);
-                    currentTimeouts.push(timeoutId);
-                }
             }
         }
 
@@ -665,7 +710,6 @@ if ($version) $current_version = $version['version'];
             const nextId = parseInt(currentContent.next_content_id);
             console.log('Loading next content, next_content_id:', currentContent.next_content_id);
 
-            // Valid next content ID exists
             if (!isNaN(nextId) && nextId > 0) {
                 fetch(`get_content.php?id=${nextId}&t=${Date.now()}`)
                     .then(response => response.json())
@@ -674,7 +718,7 @@ if ($version) $current_version = $version['version'];
                             updateCurrentContent(data);
                             setTimeout(() => loadContent(), 100);
                         } else {
-                            console.log('Next content not found, waiting for admin to publish new content');
+                            console.log('Next content not found, waiting for admin');
                         }
                     })
                     .catch(error => {
@@ -744,17 +788,17 @@ if ($version) $current_version = $version['version'];
 
         // Initialize
         document.addEventListener('DOMContentLoaded', function() {
-            // Unlock audio on first user interaction (optional, but good fallback)
-            const unlockOnFirstTouch = () => {
-                unlockAudio();
-                document.removeEventListener('click', unlockOnFirstTouch);
-                document.removeEventListener('touchstart', unlockOnFirstTouch);
-            };
-            document.addEventListener('click', unlockOnFirstTouch);
-            document.addEventListener('touchstart', unlockOnFirstTouch);
-
-            // Also try to unlock immediately (AudioContext resume)
+            // Unlock audio aggressively on page load
             unlockAudio();
+
+            // Also try to unlock on first user interaction (backup)
+            const unlockOnInteraction = () => {
+                unlockAudio();
+                document.removeEventListener('click', unlockOnInteraction);
+                document.removeEventListener('touchstart', unlockOnInteraction);
+            };
+            document.addEventListener('click', unlockOnInteraction);
+            document.addEventListener('touchstart', unlockOnInteraction);
 
             loadContent();
             startPolling();
