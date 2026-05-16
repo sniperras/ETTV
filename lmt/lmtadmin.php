@@ -29,6 +29,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Start transaction
         $pdo->beginTransaction();
 
+        // FIRST: Set all existing content as inactive for this admin role
+        $stmt_deactivate = $pdo->prepare("UPDATE content SET is_active = 0 WHERE admin_role = 'lmt'");
+        $stmt_deactivate->execute();
+
         if ($content_type === 'slideshow') {
             // Handle slideshow with multiple images
             if (!isset($_FILES['images']) || empty($_FILES['images']['tmp_name'][0])) {
@@ -100,7 +104,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             // Extract video ID and create embed URL without controls
             $video_id = extractYouTubeID($youtube_link);
-            $embed_url = "https://www.youtube.com/embed/{$video_id}?autoplay=1&loop=1&playlist={$video_id}&controls=0&showinfo=0&rel=0&modestbranding=1";
+            $embed_url = "https://www.youtube.com/embed/{$video_id}?autoplay=1&controls=0&showinfo=0&rel=0&modestbranding=1";
 
             $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, content_data, display_duration, loop_count, next_content_id, is_active) VALUES (?, ?, ?, ?, ?, ?, 1)");
             $stmt->execute(['lmt', $content_type, $embed_url, $display_duration, $loop_count, $next_content_id]);
@@ -116,10 +120,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, content_data, message_type, display_duration, loop_count, next_content_id, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, 1)");
             $stmt->execute(['lmt', $content_type, $message_text, $message_type, $display_duration, $loop_count, $next_content_id]);
         }
-
-        // Set previous content as inactive
-        $stmt2 = $pdo->prepare("UPDATE content SET is_active = 0 WHERE admin_role = 'lmt' AND is_active = 1 AND id != ?");
-        $stmt2->execute([$pdo->lastInsertId()]);
 
         // Update version for real-time refresh
         $stmt3 = $pdo->prepare("UPDATE content_version SET version = version + 1, last_update = NOW() WHERE admin_role = 'lmt'");
@@ -185,8 +185,8 @@ function extractYouTubeID($url)
     return $url;
 }
 
-// Get existing content for dropdown
-$stmt = $pdo->prepare("SELECT id, content_type, created_at FROM content WHERE admin_role = 'lmt' ORDER BY created_at DESC LIMIT 50");
+// Get existing content for dropdown (only inactive content for "next content" selection)
+$stmt = $pdo->prepare("SELECT id, content_type, created_at FROM content WHERE admin_role = 'lmt' AND is_active = 0 ORDER BY created_at DESC LIMIT 50");
 $stmt->execute();
 $existing_content = $stmt->fetchAll();
 ?>
@@ -454,7 +454,7 @@ $existing_content = $stmt->fetchAll();
                     <div class="form-group">
                         <label>YouTube URL</label>
                         <input type="url" name="youtube_link" placeholder="https://www.youtube.com/watch?v=...">
-                        <div class="info-text">Video will play without controls and loop automatically</div>
+                        <div class="info-text">Video will play without controls. Duration is controlled by "Overall Display Duration" below.</div>
                     </div>
                 </div>
 
@@ -568,7 +568,7 @@ $existing_content = $stmt->fetchAll();
             } else if (this.value === 'youtube') {
                 youtubeLink.classList.add('active');
                 layoutTypeGroup.style.display = 'none';
-                loopGroup.style.display = 'block';
+                loopGroup.style.display = 'none';
             } else if (this.value === 'message') {
                 customMessage.classList.add('active');
                 layoutTypeGroup.style.display = 'none';

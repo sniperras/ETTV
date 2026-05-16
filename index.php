@@ -12,42 +12,39 @@ if (!in_array($current_mode, ['lmt', 'bmt'])) {
     $current_mode = 'lmt';
 }
 
-// Get current content
+// Get current active content
 $stmt = $pdo->prepare("SELECT * FROM content WHERE admin_role = ? AND is_active = 1 ORDER BY created_at DESC LIMIT 1");
 $stmt->execute([$current_mode]);
 $current_content = $stmt->fetch();
 
-// Get slides if slideshow
+// Parse content data
+$layout_data = null;
 $slides = [];
-if ($current_content && $current_content['content_type'] === 'slideshow') {
-    // Check if it's a multi-image layout stored as JSON
-    $data = json_decode($current_content['content_data'], true);
-    if ($data && isset($data['type']) && $data['type'] !== 'slideshow') {
-        // This is a multi-image layout
-        $current_content['layout_data'] = $data;
-    } else {
-        // Traditional slideshow - get from content_slides table
-        $stmt = $pdo->prepare("SELECT * FROM content_slides WHERE content_id = ? ORDER BY slide_order ASC");
-        $stmt->execute([$current_content['id']]);
-        $slides = $stmt->fetchAll();
 
-        // If slides are empty, try to parse as JSON from content_data
-        if (empty($slides) && $current_content['content_data']) {
-            $data = json_decode($current_content['content_data'], true);
-            if ($data && isset($data['type']) && $data['type'] === 'slideshow' && isset($data['images'])) {
-                $slides = $data['images'];
-            }
+if ($current_content) {
+    if ($current_content['content_type'] === 'slideshow') {
+        // Try to parse as JSON first (for multi-image layouts)
+        $parsed = json_decode($current_content['content_data'], true);
+        if ($parsed && isset($parsed['type'])) {
+            // This is a multi-image layout
+            $layout_data = $parsed;
+        } else {
+            // Traditional slideshow - get from content_slides table
+            $stmt = $pdo->prepare("SELECT * FROM content_slides WHERE content_id = ? ORDER BY slide_order ASC");
+            $stmt->execute([$current_content['id']]);
+            $slides = $stmt->fetchAll();
         }
     }
 }
 
+// If no content, use default
 if (!$current_content) {
     $current_content = [
         'id' => null,
         'content_type' => 'message',
         'content_data' => 'Welcome to LMT TV Display',
         'message_type' => 'memo',
-        'display_duration' => 10,
+        'display_duration' => 300, // 5 minutes default
         'loop_count' => 1,
         'next_content_id' => null
     ];
@@ -150,6 +147,7 @@ if ($version) $current_version = $version['version'];
             display: flex;
             align-items: center;
             justify-content: center;
+            overflow: hidden;
         }
 
         /* Slideshow Container */
@@ -328,6 +326,7 @@ if ($version) $current_version = $version['version'];
     <script>
         let currentMode = '<?php echo $current_mode; ?>';
         let currentContent = <?php echo json_encode($current_content); ?>;
+        let currentLayoutData = <?php echo json_encode($layout_data); ?>;
         let currentSlides = <?php echo json_encode($slides); ?>;
         let currentVersion = <?php echo $current_version; ?>;
         let currentTimeouts = [];
@@ -349,6 +348,18 @@ if ($version) $current_version = $version['version'];
                     if (data.success && data.content) {
                         currentContent = data.content;
                         currentSlides = data.slides || [];
+                        currentLayoutData = null;
+
+                        // Parse layout data if it's a multi-image layout
+                        if (currentContent.content_type === 'slideshow' && currentContent.content_data) {
+                            try {
+                                const parsed = JSON.parse(currentContent.content_data);
+                                if (parsed.type && parsed.images) {
+                                    currentLayoutData = parsed;
+                                    currentSlides = [];
+                                }
+                            } catch (e) {}
+                        }
                         loadContent();
                     }
                 })
@@ -362,6 +373,7 @@ if ($version) $current_version = $version['version'];
             clearAllTimeouts();
 
             console.log('Loading content type:', currentContent.content_type);
+            console.log('Layout data:', currentLayoutData);
             console.log('Slides count:', currentSlides ? currentSlides.length : 0);
 
             if (!currentContent || !currentContent.content_type) {
@@ -372,16 +384,15 @@ if ($version) $current_version = $version['version'];
 
             switch (currentContent.content_type) {
                 case 'slideshow':
-                    // Check if it's a multi-image layout
-                    if (currentContent.layout_data && currentContent.layout_data.type && currentContent.layout_data.type !== 'slideshow') {
-                        loadMultiImageLayout(currentContent.layout_data);
+                    if (currentLayoutData && currentLayoutData.type && currentLayoutData.images) {
+                        loadMultiImageLayout(currentLayoutData);
                     } else if (currentSlides && currentSlides.length > 0) {
                         loadSlideshow();
                     } else {
-                        // Try to parse content_data for traditional slideshow
+                        console.log('No slides found, checking content_data directly');
                         try {
                             const parsed = JSON.parse(currentContent.content_data);
-                            if (parsed.images && parsed.images.length > 0) {
+                            if (parsed.images && parsed.images.length > 0 && parsed.type === 'slideshow') {
                                 // Convert to slides format
                                 currentSlides = parsed.images.map((img, idx) => ({
                                     image_path: img.path,
@@ -391,7 +402,7 @@ if ($version) $current_version = $version['version'];
                                 return;
                             }
                         } catch (e) {
-                            console.log('Not JSON or invalid format');
+                            console.log('Not valid JSON');
                         }
                         loadMessage();
                     }
@@ -414,13 +425,12 @@ if ($version) $current_version = $version['version'];
             const wrapper = document.getElementById('contentWrapper');
 
             if (!currentSlides || currentSlides.length === 0) {
-                console.log('No slides found');
+                console.log('No slides found for slideshow');
                 loadMessage();
                 return;
             }
 
             console.log('Loading slideshow with', currentSlides.length, 'slides');
-            console.log('Slides data:', currentSlides);
 
             let html = '<div class="slideshow-container">';
             currentSlides.forEach((slide, index) => {
@@ -428,6 +438,8 @@ if ($version) $current_version = $version['version'];
                 if (!imagePath.startsWith('/') && !imagePath.startsWith('http')) {
                     imagePath = '/' + imagePath;
                 }
+                // Fix duplicate uploads/ in path
+                imagePath = imagePath.replace('uploads/uploads/', 'uploads/');
 
                 html += `<img src="${imagePath}" 
                                class="slide-image" 
@@ -464,9 +476,10 @@ if ($version) $current_version = $version['version'];
                 currentTimeouts.push(timeoutId);
             }
 
-            // Schedule content expiry
+            // Schedule content expiry - use display_duration
             if (currentContent.display_duration && currentContent.display_duration > 0) {
                 const expiryTimeoutId = setTimeout(() => {
+                    console.log('Slideshow duration expired, loading next content');
                     loadNextContent();
                 }, currentContent.display_duration * 1000);
                 currentTimeouts.push(expiryTimeoutId);
@@ -488,41 +501,43 @@ if ($version) $current_version = $version['version'];
             let html = '';
 
             if (layoutType === '4-image') {
-                // 2x2 Grid layout
-                html = `<div style="display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; width: 100%; height: 100%; gap: 10px; padding: 10px; background: #000;">`;
+                // 2x2 Grid layout - full viewport, no scrolling
+                html = `<div style="display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; width: 100vw; height: 100vh; gap: 5px; background: #000;">`;
                 images.forEach(image => {
                     let imagePath = image.path;
                     if (!imagePath.startsWith('/') && !imagePath.startsWith('http')) {
                         imagePath = '/' + imagePath;
                     }
-                    html += `<div style="display: flex; align-items: center; justify-content: center; width: 100%; height: 100%;">
+                    imagePath = imagePath.replace('uploads/uploads/', 'uploads/');
+                    html += `<div style="display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; overflow: hidden;">
                                 <img src="${imagePath}" style="width: 100%; height: 100%; object-fit: contain;" onerror="this.style.display='none'">
                             </div>`;
                 });
                 html += `</div>`;
-            } else if (layoutType === '2-image' || layoutType === '3-image') {
-                // Horizontal layout
-                const gridTemplate = layoutType === '2-image' ? '1fr 1fr' : '1fr 1fr 1fr';
-                html = `<div style="display: grid; grid-template-columns: ${gridTemplate}; width: 100%; height: 100%; gap: 10px; padding: 10px; background: #000;">`;
+            } else if (layoutType === '2-image') {
+                // 2 images horizontal
+                html = `<div style="display: grid; grid-template-columns: 1fr 1fr; width: 100vw; height: 100vh; gap: 5px; background: #000;">`;
                 images.forEach(image => {
                     let imagePath = image.path;
                     if (!imagePath.startsWith('/') && !imagePath.startsWith('http')) {
                         imagePath = '/' + imagePath;
                     }
-                    html += `<div style="display: flex; align-items: center; justify-content: center; width: 100%; height: 100%;">
+                    imagePath = imagePath.replace('uploads/uploads/', 'uploads/');
+                    html += `<div style="display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; overflow: hidden;">
                                 <img src="${imagePath}" style="width: 100%; height: 100%; object-fit: contain;" onerror="this.style.display='none'">
                             </div>`;
                 });
                 html += `</div>`;
-            } else {
-                // Default fallback
-                html = `<div style="display: flex; width: 100%; height: 100%; gap: 10px; padding: 10px; background: #000;">`;
+            } else if (layoutType === '3-image') {
+                // 3 images horizontal
+                html = `<div style="display: grid; grid-template-columns: 1fr 1fr 1fr; width: 100vw; height: 100vh; gap: 5px; background: #000;">`;
                 images.forEach(image => {
                     let imagePath = image.path;
                     if (!imagePath.startsWith('/') && !imagePath.startsWith('http')) {
                         imagePath = '/' + imagePath;
                     }
-                    html += `<div style="flex: 1; display: flex; align-items: center; justify-content: center;">
+                    imagePath = imagePath.replace('uploads/uploads/', 'uploads/');
+                    html += `<div style="display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; overflow: hidden;">
                                 <img src="${imagePath}" style="width: 100%; height: 100%; object-fit: contain;" onerror="this.style.display='none'">
                             </div>`;
                 });
@@ -531,9 +546,10 @@ if ($version) $current_version = $version['version'];
 
             wrapper.innerHTML = html;
 
-            // Schedule expiry
+            // Schedule expiry using display_duration
             if (currentContent.display_duration && currentContent.display_duration > 0) {
                 const timeoutId = setTimeout(() => {
+                    console.log('Multi-image layout duration expired, loading next content');
                     loadNextContent();
                 }, currentContent.display_duration * 1000);
                 currentTimeouts.push(timeoutId);
@@ -545,8 +561,8 @@ if ($version) $current_version = $version['version'];
             let videoUrl = currentContent.content_data;
 
             const videoId = extractYouTubeId(videoUrl);
-            // Add autoplay and force reload parameters
-            const embedUrl = `https://www.youtube.com/embed/${videoId}?autoplay=1&loop=1&playlist=${videoId}&controls=0&showinfo=0&rel=0&modestbranding=1&iv_load_policy=3&enablejsapi=1`;
+            // Use display_duration for overall play time, ignore loop_count
+            const embedUrl = `https://www.youtube.com/embed/${videoId}?autoplay=1&controls=0&showinfo=0&rel=0&modestbranding=1&iv_load_policy=3`;
 
             wrapper.innerHTML = `
                 <div class="video-container">
@@ -558,29 +574,14 @@ if ($version) $current_version = $version['version'];
                 </div>
             `;
 
-            // Force reload to ensure autoplay works
-            const iframe = document.getElementById('youtubeFrame');
-            if (iframe) {
-                iframe.src = embedUrl;
-            }
-
-            let playCount = 0;
-            const totalDuration = currentContent.display_duration * currentContent.loop_count;
-
-            const timeoutId = setTimeout(() => {
-                playCount++;
-                if (playCount < currentContent.loop_count) {
-                    const iframeReload = document.getElementById('youtubeFrame');
-                    if (iframeReload) {
-                        iframeReload.src = embedUrl;
-                    }
-                    const newTimeoutId = setTimeout(arguments.callee, totalDuration * 1000);
-                    currentTimeouts.push(newTimeoutId);
-                } else {
+            // Use display_duration for how long to show the video
+            if (currentContent.display_duration && currentContent.display_duration > 0) {
+                const timeoutId = setTimeout(() => {
+                    console.log('Video duration expired, loading next content');
                     loadNextContent();
-                }
-            }, totalDuration * 1000);
-            currentTimeouts.push(timeoutId);
+                }, currentContent.display_duration * 1000);
+                currentTimeouts.push(timeoutId);
+            }
         }
 
         function loadPDF() {
@@ -599,6 +600,7 @@ if ($version) $current_version = $version['version'];
             if (!filePath.startsWith('/') && !filePath.startsWith('http')) {
                 filePath = '/' + filePath;
             }
+            filePath = filePath.replace('uploads/uploads/', 'uploads/');
 
             const viewerUrl = `https://docs.google.com/viewer?url=${encodeURIComponent(window.location.origin + filePath)}&embedded=true`;
 
@@ -656,12 +658,19 @@ if ($version) $current_version = $version['version'];
                         if (data.success && data.content) {
                             currentContent = data.content;
                             currentSlides = data.slides || [];
-                            // If it's YouTube, force a small delay to ensure autoplay works
-                            if (data.content.content_type === 'youtube') {
-                                setTimeout(() => loadContent(), 100);
-                            } else {
-                                loadContent();
+                            currentLayoutData = null;
+
+                            // Parse layout data if multi-image
+                            if (currentContent.content_type === 'slideshow' && currentContent.content_data) {
+                                try {
+                                    const parsed = JSON.parse(currentContent.content_data);
+                                    if (parsed.type && parsed.images) {
+                                        currentLayoutData = parsed;
+                                        currentSlides = [];
+                                    }
+                                } catch (e) {}
                             }
+                            loadContent();
                         } else {
                             loadDefaultContent();
                         }
@@ -676,12 +685,14 @@ if ($version) $current_version = $version['version'];
         }
 
         function loadDefaultContent() {
+            console.log('Loading default content');
             fetch(`get_content.php?mode=${currentMode}&default=true&t=${Date.now()}`)
                 .then(response => response.json())
                 .then(data => {
                     if (data.success && data.content) {
                         currentContent = data.content;
                         currentSlides = data.slides || [];
+                        currentLayoutData = null;
                         loadContent();
                     }
                 })
@@ -722,12 +733,18 @@ if ($version) $current_version = $version['version'];
                                     if (data.success && data.content) {
                                         currentContent = data.content;
                                         currentSlides = data.slides || [];
-                                        // If it's YouTube, force reload for autoplay
-                                        if (data.content.content_type === 'youtube') {
-                                            setTimeout(() => loadContent(), 100);
-                                        } else {
-                                            loadContent();
+                                        currentLayoutData = null;
+
+                                        if (currentContent.content_type === 'slideshow' && currentContent.content_data) {
+                                            try {
+                                                const parsed = JSON.parse(currentContent.content_data);
+                                                if (parsed.type && parsed.images) {
+                                                    currentLayoutData = parsed;
+                                                    currentSlides = [];
+                                                }
+                                            } catch (e) {}
                                         }
+                                        loadContent();
                                     }
                                 });
                         }
