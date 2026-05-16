@@ -7,6 +7,13 @@ if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'lmtadmin') {
     exit();
 }
 
+// Add display_order column if not exists (run once)
+try {
+    $pdo->exec("ALTER TABLE content ADD COLUMN IF NOT EXISTS display_order INT DEFAULT NULL");
+} catch (PDOException $e) {
+    // Column might already exist
+}
+
 // Handle save order
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_order'])) {
     try {
@@ -15,14 +22,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_order'])) {
         if ($order_data && is_array($order_data)) {
             $pdo->beginTransaction();
 
-            // First, set all content to inactive
-            $stmt = $pdo->prepare("UPDATE content SET is_active = 0 WHERE admin_role = 'lmt'");
-            $stmt->execute();
-
-            // Activate content in the new order
+            // Update display_order for each content
             foreach ($order_data as $index => $item) {
-                $stmt = $pdo->prepare("UPDATE content SET is_active = 1, display_order = ? WHERE id = ? AND admin_role = 'lmt'");
+                $stmt = $pdo->prepare("UPDATE content SET display_order = ? WHERE id = ? AND admin_role = 'lmt'");
                 $stmt->execute([$index, $item['id']]);
+            }
+
+            // Set the first item as active, others inactive
+            if (!empty($order_data)) {
+                $first_id = $order_data[0]['id'];
+                $stmt = $pdo->prepare("UPDATE content SET is_active = 0 WHERE admin_role = 'lmt'");
+                $stmt->execute();
+                $stmt = $pdo->prepare("UPDATE content SET is_active = 1 WHERE id = ? AND admin_role = 'lmt'");
+                $stmt->execute([$first_id]);
             }
 
             $pdo->commit();
@@ -99,32 +111,27 @@ function formatDuration($seconds)
     return round($seconds / 86400) . ' days';
 }
 
-// Get all content for LMT (ordered by display_order, then created_at)
-$stmt = $pdo->prepare("SELECT * FROM content WHERE admin_role = 'lmt' ORDER BY COALESCE(display_order, id) ASC, created_at DESC");
+// Get all content for LMT (ordered by display_order, then id)
+$stmt = $pdo->prepare("SELECT * FROM content WHERE admin_role = 'lmt' ORDER BY COALESCE(display_order, 999999) ASC, id ASC");
 $stmt->execute();
 $contents = $stmt->fetchAll();
 
 // Get preview data for each content
 foreach ($contents as &$content) {
     if ($content['content_type'] === 'slideshow') {
-        // Try to get first slide image
         $stmt2 = $pdo->prepare("SELECT image_path FROM content_slides WHERE content_id = ? ORDER BY slide_order ASC LIMIT 1");
         $stmt2->execute([$content['id']]);
         $first_slide = $stmt2->fetch();
         $content['preview_image'] = $first_slide ? $first_slide['image_path'] : null;
 
-        // Get slide count
         $stmt3 = $pdo->prepare("SELECT COUNT(*) as count FROM content_slides WHERE content_id = ?");
         $stmt3->execute([$content['id']]);
         $slide_count = $stmt3->fetch();
         $content['slide_count'] = $slide_count['count'];
     } elseif ($content['content_type'] === 'youtube') {
-        // Extract video ID for thumbnail
         $video_id = extractYouTubeID($content['content_data']);
         $content['preview_image'] = "https://img.youtube.com/vi/{$video_id}/mqdefault.jpg";
         $content['video_id'] = $video_id;
-    } elseif ($content['content_type'] === 'message') {
-        $content['preview_text'] = substr($content['content_data'], 0, 100);
     }
 }
 
@@ -164,7 +171,7 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
         }
 
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            font-family: 'Segoe UI', sans-serif;
             background: #f5f5f5;
             overflow: hidden;
         }
@@ -195,7 +202,7 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
             font-size: 14px;
             font-weight: bold;
             cursor: pointer;
-            transition: transform 0.2s, background 0.2s;
+            transition: transform 0.2s;
             text-decoration: none;
             display: inline-block;
         }
@@ -239,7 +246,6 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
             gap: 20px;
         }
 
-        /* Left Side - Order List */
         .order-panel {
             flex: 1;
             background: white;
@@ -345,7 +351,6 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
             font-size: 12px;
         }
 
-        /* Right Side - Preview Panel */
         .preview-panel {
             flex: 1;
             background: white;
@@ -382,7 +387,6 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
             margin-bottom: 20px;
         }
 
-        /* Modal Styles */
         .modal {
             display: none;
             position: fixed;
@@ -450,7 +454,6 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
             border-left: 4px solid #dc3545;
         }
 
-        /* Scrollbar */
         ::-webkit-scrollbar {
             width: 8px;
         }
@@ -484,7 +487,6 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
     <?php endif; ?>
 
     <div class="container">
-        <!-- Left Side - Order List -->
         <div class="order-panel">
             <div class="order-header">
                 <h3>📋 Display Sequence (Drag to reorder)</h3>
@@ -526,7 +528,7 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
                                 </div>
                             </div>
                             <div class="item-actions">
-                                <button class="btn btn-warning btn-icon" onclick="editDuration(<?php echo $content['id']; ?>, '<?php echo $content['display_duration']; ?>')">✏️ Edit</button>
+                                <button class="btn btn-warning btn-icon" onclick="editDuration(<?php echo $content['id']; ?>, <?php echo $content['display_duration']; ?>)">✏️ Edit</button>
                                 <button class="btn btn-danger btn-icon" onclick="deleteContent(<?php echo $content['id']; ?>)">🗑️ Delete</button>
                             </div>
                         </div>
@@ -535,7 +537,6 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
             </div>
         </div>
 
-        <!-- Right Side - Preview Panel -->
         <div class="preview-panel">
             <div class="preview-header">
                 <h3>👁️ Preview</h3>
@@ -550,7 +551,6 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
         </div>
     </div>
 
-    <!-- Edit Duration Modal -->
     <div id="editModal" class="modal">
         <div class="modal-content">
             <div class="modal-header">✏️ Edit Display Duration</div>
@@ -583,13 +583,11 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
 
     <script>
         let draggedItem = null;
-        let currentOrder = [];
 
-        // Drag and drop functionality
         function initDragAndDrop() {
             const items = document.querySelectorAll('.order-item');
-
             items.forEach(item => {
+                item.setAttribute('draggable', 'true');
                 item.addEventListener('dragstart', handleDragStart);
                 item.addEventListener('dragend', handleDragEnd);
                 item.addEventListener('dragover', handleDragOver);
@@ -597,12 +595,10 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
                 item.addEventListener('dragleave', handleDragLeave);
                 item.addEventListener('drop', handleDrop);
                 item.addEventListener('click', (e) => {
-                    // Don't select when clicking on buttons
                     if (!e.target.closest('.item-actions')) {
                         selectItem(item);
                     }
                 });
-                item.setAttribute('draggable', 'true');
             });
         }
 
@@ -610,7 +606,6 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
             draggedItem = this;
             this.classList.add('dragging');
             e.dataTransfer.effectAllowed = 'move';
-            e.dataTransfer.setData('text/html', this.innerHTML);
         }
 
         function handleDragEnd(e) {
@@ -639,12 +634,10 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
         function handleDrop(e) {
             e.preventDefault();
             this.classList.remove('drag-over');
-
             if (draggedItem && this !== draggedItem) {
                 const parent = document.getElementById('orderList');
                 const draggedIndex = Array.from(parent.children).indexOf(draggedItem);
                 const targetIndex = Array.from(parent.children).indexOf(this);
-
                 if (draggedIndex < targetIndex) {
                     parent.insertBefore(draggedItem, this.nextSibling);
                 } else {
@@ -654,32 +647,34 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
         }
 
         function selectItem(item) {
-            // Remove selection from all items
-            document.querySelectorAll('.order-item').forEach(i => {
-                i.classList.remove('selected');
-            });
-
-            // Add selection to clicked item
+            document.querySelectorAll('.order-item').forEach(i => i.classList.remove('selected'));
             item.classList.add('selected');
-
-            // Load preview
             const contentId = item.getAttribute('data-id');
             loadPreview(contentId);
         }
 
         function loadPreview(contentId) {
-            fetch(`get_content.php?id=${contentId}`)
-                .then(response => response.json())
+            const previewDiv = document.getElementById('previewContent');
+            previewDiv.innerHTML = '<div class="preview-placeholder"><div class="preview-placeholder-icon">⏳</div><div>Loading preview...</div></div>';
+
+            // Use absolute path for AJAX request
+            fetch(`/ettv/get_content.php?id=${contentId}&t=${Date.now()}`)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('HTTP error ' + response.status);
+                    }
+                    return response.json();
+                })
                 .then(data => {
                     if (data.success && data.content) {
-                        displayPreview(data.content, data.slides);
+                        displayPreview(data.content, data.slides || []);
                     } else {
-                        showPreviewError();
+                        showPreviewError(data.error || 'Content not found');
                     }
                 })
                 .catch(error => {
                     console.error('Preview error:', error);
-                    showPreviewError();
+                    showPreviewError('Failed to load preview: ' + error.message);
                 });
         }
 
@@ -691,11 +686,11 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
                     if (slides && slides.length > 0) {
                         let imagePath = slides[0].image_path;
                         if (!imagePath.startsWith('/') && !imagePath.startsWith('http')) {
-                            imagePath = '/' + imagePath;
+                            imagePath = '/ettv/' + imagePath;
                         }
                         previewDiv.innerHTML = `
                             <div style="text-align: center; width: 100%; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; background: #000;">
-                                <img src="${imagePath}" style="max-width: 80%; max-height: 70%; object-fit: contain; border-radius: 10px;">
+                                <img src="${imagePath}" style="max-width: 80%; max-height: 70%; object-fit: contain; border-radius: 10px;" onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22100%22 height=%22100%22 viewBox=%220 0 100 100%22%3E%3Crect width=%22100%22 height=%22100%22 fill=%22%23333%22/%3E%3Ctext x=%2250%22 y=%2250%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23fff%22%3ENo Image%3C/text%3E%3C/svg%3E'">
                                 <div style="color: white; margin-top: 20px; text-align: center;">
                                     <strong>📸 Slideshow Preview</strong><br>
                                     ${slides.length} slide(s) | Duration: ${formatDurationPreview(content.display_duration)}
@@ -739,18 +734,8 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
                     `;
                     break;
 
-                case 'ppt':
-                    previewDiv.innerHTML = `
-                        <div style="text-align: center; width: 100%; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; background: #000; color: white;">
-                            <div style="font-size: 64px;">📄</div>
-                            <div style="margin-top: 20px;"><strong>PDF Document</strong></div>
-                            <div style="font-size: 12px; margin-top: 10px;">Duration: ${formatDurationPreview(content.display_duration)}</div>
-                        </div>
-                    `;
-                    break;
-
                 default:
-                    previewDiv.innerHTML = `<div class="preview-placeholder">Preview not available</div>`;
+                    previewDiv.innerHTML = `<div class="preview-placeholder">Preview not available for this content type</div>`;
             }
         }
 
@@ -780,11 +765,11 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
             return div.innerHTML;
         }
 
-        function showPreviewError() {
+        function showPreviewError(message) {
             document.getElementById('previewContent').innerHTML = `
                 <div class="preview-placeholder">
                     <div class="preview-placeholder-icon">⚠️</div>
-                    <div>Preview not available</div>
+                    <div>${message || 'Preview not available'}</div>
                 </div>
             `;
         }
@@ -792,31 +777,25 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
         function saveOrder() {
             const items = document.querySelectorAll('.order-item');
             const orderData = [];
-
             items.forEach((item, index) => {
                 orderData.push({
-                    id: parseInt(item.getAttribute('data-id')),
-                    order: index
+                    id: parseInt(item.getAttribute('data-id'))
                 });
             });
 
-            // Create form and submit
             const form = document.createElement('form');
             form.method = 'POST';
             form.action = '';
-
             const input = document.createElement('input');
             input.type = 'hidden';
             input.name = 'order_data';
             input.value = JSON.stringify(orderData);
             form.appendChild(input);
-
             const saveInput = document.createElement('input');
             saveInput.type = 'hidden';
             saveInput.name = 'save_order';
             saveInput.value = '1';
             form.appendChild(saveInput);
-
             document.body.appendChild(form);
             form.submit();
         }
@@ -824,23 +803,19 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
         function editDuration(id, currentDuration) {
             document.getElementById('editContentId').value = id;
             const durationSelect = document.getElementById('editDuration');
-
-            // Convert seconds back to select value
-            const seconds = parseInt(currentDuration);
-            let selectedValue = '5m'; // default
-            if (seconds <= 30) selectedValue = '30s';
-            else if (seconds <= 60) selectedValue = '1m';
-            else if (seconds <= 300) selectedValue = '5m';
-            else if (seconds <= 600) selectedValue = '10m';
-            else if (seconds <= 900) selectedValue = '15m';
-            else if (seconds <= 1800) selectedValue = '30m';
-            else if (seconds <= 3600) selectedValue = '1h';
-            else if (seconds <= 7200) selectedValue = '2h';
-            else if (seconds <= 14400) selectedValue = '4h';
-            else if (seconds <= 28800) selectedValue = '8h';
-            else if (seconds <= 43200) selectedValue = '12h';
-            else if (seconds <= 86400) selectedValue = '24h';
-
+            let selectedValue = '5m';
+            if (currentDuration <= 30) selectedValue = '30s';
+            else if (currentDuration <= 60) selectedValue = '1m';
+            else if (currentDuration <= 300) selectedValue = '5m';
+            else if (currentDuration <= 600) selectedValue = '10m';
+            else if (currentDuration <= 900) selectedValue = '15m';
+            else if (currentDuration <= 1800) selectedValue = '30m';
+            else if (currentDuration <= 3600) selectedValue = '1h';
+            else if (currentDuration <= 7200) selectedValue = '2h';
+            else if (currentDuration <= 14400) selectedValue = '4h';
+            else if (currentDuration <= 28800) selectedValue = '8h';
+            else if (currentDuration <= 43200) selectedValue = '12h';
+            else selectedValue = '24h';
             durationSelect.value = selectedValue;
             document.getElementById('editModal').classList.add('active');
         }
@@ -855,24 +830,14 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
             document.getElementById('editModal').classList.remove('active');
         }
 
-        // Initialize
         document.addEventListener('DOMContentLoaded', function() {
             initDragAndDrop();
-
             document.getElementById('saveOrderBtn').addEventListener('click', saveOrder);
-
-            // Close modal when clicking outside
             document.getElementById('editModal').addEventListener('click', function(e) {
-                if (e.target === this) {
-                    closeModal();
-                }
+                if (e.target === this) closeModal();
             });
-
-            // Auto-select first item if available
             const firstItem = document.querySelector('.order-item');
-            if (firstItem) {
-                selectItem(firstItem);
-            }
+            if (firstItem) selectItem(firstItem);
         });
     </script>
 </body>
