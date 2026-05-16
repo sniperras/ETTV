@@ -413,12 +413,23 @@ if ($version) $current_version = $version['version'];
         let currentTimeouts = [];
         let pollingInterval = null;
         let currentYouTubePlayer = null;
-        let unmuteAttempts = 0;
         let unmuteButton = null;
+
+        // Global flags for YouTube unmute detection
+        window._unmuteDone = false;
+        window._unmuteCheckTimer = null;
 
         function clearAllTimeouts() {
             currentTimeouts.forEach(timeout => clearTimeout(timeout));
             currentTimeouts = [];
+
+            // Reset YouTube unmute flags
+            window._unmuteDone = false;
+            if (window._unmuteCheckTimer) {
+                clearTimeout(window._unmuteCheckTimer);
+                window._unmuteCheckTimer = null;
+            }
+
             if (currentYouTubePlayer && typeof currentYouTubePlayer.destroy === 'function') {
                 try {
                     currentYouTubePlayer.destroy();
@@ -488,7 +499,6 @@ if ($version) $current_version = $version['version'];
         function loadContent() {
             const wrapper = document.getElementById('contentWrapper');
             clearAllTimeouts();
-            unmuteAttempts = 0;
 
             console.log('Loading content type:', currentContent.content_type);
 
@@ -646,69 +656,56 @@ if ($version) $current_version = $version['version'];
                         'iv_load_policy': 3,
                         'enablejsapi': 1,
                         'playsinline': 1
-                        // NO 'origin' parameter - it causes postMessage errors!
                     },
                     events: {
                         'onReady': function(event) {
-                            console.log('YouTube player ready, playing muted');
+                            console.log('YouTube player ready');
+                            event.target.mute();
                             event.target.playVideo();
-
-                            // Wait for PLAYING state before attempting unmute
-                            const checkState = setInterval(() => {
-                                try {
-                                    const state = event.target.getPlayerState();
-                                    if (state === YT.PlayerState.PLAYING) {
-                                        clearInterval(checkState);
-                                        console.log('Video is playing, attempting unmute...');
-                                        event.target.unMute();
-                                        event.target.setVolume(100);
-
-                                        // Verify unmute worked
-                                        setTimeout(() => {
-                                            try {
-                                                if (event.target.isMuted()) {
-                                                    console.log('Browser still muted after attempt', unmuteAttempts + 1);
-                                                    unmuteAttempts++;
-                                                    if (unmuteAttempts >= 3) {
-                                                        showUnmuteButton(event.target);
-                                                    } else {
-                                                        // Try again
-                                                        setTimeout(() => {
-                                                            event.target.unMute();
-                                                            event.target.playVideo();
-                                                        }, 1000);
-                                                    }
-                                                } else {
-                                                    console.log('Unmuted successfully!');
-                                                    if (unmuteButton) {
-                                                        unmuteButton.remove();
-                                                        unmuteButton = null;
-                                                    }
-                                                }
-                                            } catch (e) {}
-                                        }, 500);
-                                    }
-                                } catch (e) {}
-                            }, 500);
-
-                            setTimeout(() => clearInterval(checkState), 10000);
+                            // Don't attempt unmute here - wait for onStateChange
                         },
                         'onStateChange': function(event) {
+                            if (event.data === YT.PlayerState.PLAYING) {
+                                // Only attempt unmute once, when video confirms it's playing
+                                if (!window._unmuteDone) {
+                                    window._unmuteDone = true;
+                                    console.log('Video playing, attempting unmute...');
+                                    event.target.unMute();
+                                    event.target.setVolume(100);
+
+                                    // Set timer to detect if browser forces pause after unmute
+                                    window._unmuteCheckTimer = setTimeout(function() {
+                                        // If we reach here without being paused, unmute worked
+                                        console.log('Unmute appears successful - video still playing');
+                                        window._unmuteCheckTimer = null;
+                                    }, 1000);
+                                }
+                            }
+
+                            if (event.data === YT.PlayerState.PAUSED) {
+                                // Check if this pause happened RIGHT AFTER our unmute attempt
+                                if (window._unmuteDone && window._unmuteCheckTimer) {
+                                    clearTimeout(window._unmuteCheckTimer);
+                                    window._unmuteCheckTimer = null;
+                                    // Browser forced pause = unmute was blocked
+                                    console.log('Browser blocked unmute - showing button');
+                                    window._unmuteDone = false;
+                                    // Restart muted silently
+                                    event.target.mute();
+                                    event.target.playVideo();
+                                    // Show the tap-to-unmute button
+                                    showUnmuteButton(event.target);
+                                }
+                                // Other pauses (e.g. from clearAllTimeouts) - do nothing
+                            }
+
                             if (event.data === YT.PlayerState.ENDED) {
                                 console.log('Video ended, moving to next content');
                                 loadNextContent();
                             }
-                            // If video gets paused by browser, restart it
-                            if (event.data === YT.PlayerState.PAUSED && unmuteAttempts < 3) {
-                                console.log('Video was paused, restarting...');
-                                event.target.playVideo();
-                            }
                         },
                         'onError': function(event) {
                             console.error('YouTube error:', event.data);
-                            if (currentContent.display_duration > 0) {
-                                setTimeout(() => loadNextContent(), currentContent.display_duration * 1000);
-                            }
                         }
                     }
                 });
