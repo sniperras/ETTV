@@ -13,7 +13,7 @@ if (!in_array($current_mode, ['lmt', 'bmt'])) {
 }
 
 // Get current active content
-$stmt = $pdo->prepare("SELECT * FROM content WHERE admin_role = ? AND is_active = 1 ORDER BY created_at DESC LIMIT 1");
+$stmt = $pdo->prepare("SELECT * FROM content WHERE admin_role = ? AND is_active = 1 ORDER BY id DESC LIMIT 1");
 $stmt->execute([$current_mode]);
 $current_content = $stmt->fetch();
 
@@ -25,8 +25,7 @@ if ($current_content) {
     if ($current_content['content_type'] === 'slideshow') {
         // Try to parse as JSON first (for multi-image layouts)
         $parsed = json_decode($current_content['content_data'], true);
-        if ($parsed && isset($parsed['type'])) {
-            // This is a multi-image layout
+        if ($parsed && isset($parsed['type']) && $parsed['type'] !== 'slideshow') {
             $layout_data = $parsed;
         } else {
             // Traditional slideshow - get from content_slides table
@@ -44,7 +43,7 @@ if (!$current_content) {
         'content_type' => 'message',
         'content_data' => 'Welcome to LMT TV Display',
         'message_type' => 'memo',
-        'display_duration' => 300, // 5 minutes default
+        'display_duration' => 300,
         'loop_count' => 1,
         'next_content_id' => null
     ];
@@ -72,7 +71,7 @@ if ($version) $current_version = $version['version'];
         }
 
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            font-family: 'Segoe UI', sans-serif;
             background: #000000;
             min-height: 100vh;
             overflow: hidden;
@@ -150,7 +149,6 @@ if ($version) $current_version = $version['version'];
             overflow: hidden;
         }
 
-        /* Slideshow Container */
         .slideshow-container {
             width: 100%;
             height: 100%;
@@ -173,7 +171,6 @@ if ($version) $current_version = $version['version'];
             opacity: 1;
         }
 
-        /* Video Container */
         .video-container {
             width: 100%;
             height: 100%;
@@ -181,13 +178,6 @@ if ($version) $current_version = $version['version'];
             background: #000;
         }
 
-        .video-container iframe {
-            width: 100%;
-            height: 100%;
-            border: none;
-        }
-
-        /* PDF Container */
         .pdf-container {
             width: 100%;
             height: 100%;
@@ -201,7 +191,6 @@ if ($version) $current_version = $version['version'];
             border: none;
         }
 
-        /* Message Styles */
         .message-container {
             width: 100%;
             height: 100%;
@@ -277,6 +266,16 @@ if ($version) $current_version = $version['version'];
             font-weight: bold;
         }
 
+        .warning .message-text,
+        .caution .message-text,
+        .memo .message-text {
+            color: #fff;
+        }
+
+        .congratulation .message-text {
+            color: #333;
+        }
+
         .mode-indicator {
             position: fixed;
             bottom: 20px;
@@ -331,10 +330,19 @@ if ($version) $current_version = $version['version'];
         let currentVersion = <?php echo $current_version; ?>;
         let currentTimeouts = [];
         let pollingInterval = null;
+        let currentYouTubePlayer = null;
+        let youTubeApiLoaded = false;
 
         function clearAllTimeouts() {
             currentTimeouts.forEach(timeout => clearTimeout(timeout));
             currentTimeouts = [];
+            // Destroy YouTube player if exists
+            if (currentYouTubePlayer && typeof currentYouTubePlayer.destroy === 'function') {
+                try {
+                    currentYouTubePlayer.destroy();
+                } catch (e) {}
+                currentYouTubePlayer = null;
+            }
         }
 
         function switchMode(mode) {
@@ -350,11 +358,10 @@ if ($version) $current_version = $version['version'];
                         currentSlides = data.slides || [];
                         currentLayoutData = null;
 
-                        // Parse layout data if it's a multi-image layout
                         if (currentContent.content_type === 'slideshow' && currentContent.content_data) {
                             try {
                                 const parsed = JSON.parse(currentContent.content_data);
-                                if (parsed.type && parsed.images) {
+                                if (parsed.type && parsed.images && parsed.type !== 'slideshow') {
                                     currentLayoutData = parsed;
                                     currentSlides = [];
                                 }
@@ -373,8 +380,6 @@ if ($version) $current_version = $version['version'];
             clearAllTimeouts();
 
             console.log('Loading content type:', currentContent.content_type);
-            console.log('Layout data:', currentLayoutData);
-            console.log('Slides count:', currentSlides ? currentSlides.length : 0);
 
             if (!currentContent || !currentContent.content_type) {
                 console.error('Invalid content structure');
@@ -382,42 +387,34 @@ if ($version) $current_version = $version['version'];
                 return;
             }
 
-            switch (currentContent.content_type) {
-                case 'slideshow':
-                    if (currentLayoutData && currentLayoutData.type && currentLayoutData.images) {
-                        loadMultiImageLayout(currentLayoutData);
-                    } else if (currentSlides && currentSlides.length > 0) {
-                        loadSlideshow();
-                    } else {
-                        console.log('No slides found, checking content_data directly');
-                        try {
-                            const parsed = JSON.parse(currentContent.content_data);
-                            if (parsed.images && parsed.images.length > 0 && parsed.type === 'slideshow') {
-                                // Convert to slides format
-                                currentSlides = parsed.images.map((img, idx) => ({
-                                    image_path: img.path,
-                                    duration: img.duration || 10
-                                }));
+            if (currentContent.content_type === 'slideshow') {
+                if (currentLayoutData && currentLayoutData.type && currentLayoutData.images) {
+                    loadMultiImageLayout(currentLayoutData);
+                } else if (currentSlides && currentSlides.length > 0) {
+                    loadSlideshow();
+                } else {
+                    try {
+                        const parsed = JSON.parse(currentContent.content_data);
+                        if (parsed.images && parsed.images.length > 0) {
+                            if (parsed.type && parsed.type !== 'slideshow') {
+                                loadMultiImageLayout(parsed);
+                            } else {
+                                currentSlides = parsed.images;
                                 loadSlideshow();
-                                return;
                             }
-                        } catch (e) {
-                            console.log('Not valid JSON');
+                            return;
                         }
-                        loadMessage();
-                    }
-                    break;
-                case 'youtube':
-                    loadYouTube();
-                    break;
-                case 'message':
+                    } catch (e) {}
                     loadMessage();
-                    break;
-                case 'ppt':
-                    loadPDF();
-                    break;
-                default:
-                    loadMessage();
+                }
+            } else if (currentContent.content_type === 'youtube') {
+                loadYouTube();
+            } else if (currentContent.content_type === 'message') {
+                loadMessage();
+            } else if (currentContent.content_type === 'ppt') {
+                loadPDF();
+            } else {
+                loadMessage();
             }
         }
 
@@ -425,7 +422,6 @@ if ($version) $current_version = $version['version'];
             const wrapper = document.getElementById('contentWrapper');
 
             if (!currentSlides || currentSlides.length === 0) {
-                console.log('No slides found for slideshow');
                 loadMessage();
                 return;
             }
@@ -434,18 +430,13 @@ if ($version) $current_version = $version['version'];
 
             let html = '<div class="slideshow-container">';
             currentSlides.forEach((slide, index) => {
-                let imagePath = slide.image_path;
+                let imagePath = slide.image_path || slide.path;
                 if (!imagePath.startsWith('/') && !imagePath.startsWith('http')) {
                     imagePath = '/' + imagePath;
                 }
-                // Fix duplicate uploads/ in path
                 imagePath = imagePath.replace('uploads/uploads/', 'uploads/');
 
-                html += `<img src="${imagePath}" 
-                               class="slide-image" 
-                               data-index="${index}" 
-                               style="opacity: ${index === 0 ? 1 : 0};"
-                               onerror="this.style.display='none'">`;
+                html += `<img src="${imagePath}" class="slide-image" data-index="${index}" style="opacity: ${index === 0 ? 1 : 0};" onerror="this.style.display='none'">`;
             });
             html += '</div>';
             wrapper.innerHTML = html;
@@ -460,7 +451,6 @@ if ($version) $current_version = $version['version'];
 
             function showNextSlide() {
                 if (!slides.length) return;
-
                 slides[currentIndex].style.opacity = '0';
                 currentIndex = (currentIndex + 1) % slides.length;
                 slides[currentIndex].style.opacity = '1';
@@ -476,10 +466,9 @@ if ($version) $current_version = $version['version'];
                 currentTimeouts.push(timeoutId);
             }
 
-            // Schedule content expiry - use display_duration
             if (currentContent.display_duration && currentContent.display_duration > 0) {
                 const expiryTimeoutId = setTimeout(() => {
-                    console.log('Slideshow duration expired, loading next content');
+                    console.log('Slideshow duration expired');
                     loadNextContent();
                 }, currentContent.display_duration * 1000);
                 currentTimeouts.push(expiryTimeoutId);
@@ -496,13 +485,12 @@ if ($version) $current_version = $version['version'];
                 return;
             }
 
-            console.log('Loading multi-image layout:', layoutType, 'with', images.length, 'images');
-
             let html = '';
+            const gap = 10;
+            const padding = 10;
 
             if (layoutType === '4-image') {
-                // 2x2 Grid layout - full viewport, no scrolling
-                html = `<div style="display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; width: 100vw; height: 100vh; gap: 5px; background: #000;">`;
+                html = `<div style="display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; width: 100vw; height: 100vh; gap: ${gap}px; padding: ${padding}px; background: #000; box-sizing: border-box;">`;
                 images.forEach(image => {
                     let imagePath = image.path;
                     if (!imagePath.startsWith('/') && !imagePath.startsWith('http')) {
@@ -514,23 +502,9 @@ if ($version) $current_version = $version['version'];
                             </div>`;
                 });
                 html += `</div>`;
-            } else if (layoutType === '2-image') {
-                // 2 images horizontal
-                html = `<div style="display: grid; grid-template-columns: 1fr 1fr; width: 100vw; height: 100vh; gap: 5px; background: #000;">`;
-                images.forEach(image => {
-                    let imagePath = image.path;
-                    if (!imagePath.startsWith('/') && !imagePath.startsWith('http')) {
-                        imagePath = '/' + imagePath;
-                    }
-                    imagePath = imagePath.replace('uploads/uploads/', 'uploads/');
-                    html += `<div style="display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; overflow: hidden;">
-                                <img src="${imagePath}" style="width: 100%; height: 100%; object-fit: contain;" onerror="this.style.display='none'">
-                            </div>`;
-                });
-                html += `</div>`;
-            } else if (layoutType === '3-image') {
-                // 3 images horizontal
-                html = `<div style="display: grid; grid-template-columns: 1fr 1fr 1fr; width: 100vw; height: 100vh; gap: 5px; background: #000;">`;
+            } else {
+                const columns = layoutType === '2-image' ? '1fr 1fr' : '1fr 1fr 1fr';
+                html = `<div style="display: grid; grid-template-columns: ${columns}; width: 100vw; height: 100vh; gap: ${gap}px; padding: ${padding}px; background: #000; box-sizing: border-box;">`;
                 images.forEach(image => {
                     let imagePath = image.path;
                     if (!imagePath.startsWith('/') && !imagePath.startsWith('http')) {
@@ -546,10 +520,9 @@ if ($version) $current_version = $version['version'];
 
             wrapper.innerHTML = html;
 
-            // Schedule expiry using display_duration
             if (currentContent.display_duration && currentContent.display_duration > 0) {
                 const timeoutId = setTimeout(() => {
-                    console.log('Multi-image layout duration expired, loading next content');
+                    console.log('Multi-image layout duration expired');
                     loadNextContent();
                 }, currentContent.display_duration * 1000);
                 currentTimeouts.push(timeoutId);
@@ -559,28 +532,92 @@ if ($version) $current_version = $version['version'];
         function loadYouTube() {
             const wrapper = document.getElementById('contentWrapper');
             let videoUrl = currentContent.content_data;
-
             const videoId = extractYouTubeId(videoUrl);
-            // Use display_duration for overall play time, ignore loop_count
-            const embedUrl = `https://www.youtube.com/embed/${videoId}?autoplay=1&controls=0&showinfo=0&rel=0&modestbranding=1&iv_load_policy=3`;
 
-            wrapper.innerHTML = `
-                <div class="video-container">
-                    <iframe id="youtubeFrame" src="${embedUrl}" 
-                            frameborder="0" 
-                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
-                            allowfullscreen>
-                    </iframe>
-                </div>
-            `;
+            // Create container for YouTube player
+            const containerId = 'youtube-player-' + Date.now();
+            wrapper.innerHTML = `<div id="${containerId}" class="video-container" style="width: 100%; height: 100%;"></div>`;
 
-            // Use display_duration for how long to show the video
-            if (currentContent.display_duration && currentContent.display_duration > 0) {
-                const timeoutId = setTimeout(() => {
-                    console.log('Video duration expired, loading next content');
-                    loadNextContent();
-                }, currentContent.display_duration * 1000);
-                currentTimeouts.push(timeoutId);
+            // Load YouTube API if not loaded
+            if (typeof YT === 'undefined') {
+                window.youtubeCallback = function() {
+                    createYouTubePlayer(containerId, videoId);
+                };
+
+                const tag = document.createElement('script');
+                tag.src = 'https://www.youtube.com/iframe_api';
+                tag.onload = function() {
+                    // API will call onYouTubeIframeAPIReady
+                };
+                document.head.appendChild(tag);
+            } else {
+                createYouTubePlayer(containerId, videoId);
+            }
+        }
+
+        function createYouTubePlayer(containerId, videoId) {
+            if (currentYouTubePlayer && typeof currentYouTubePlayer.destroy === 'function') {
+                try {
+                    currentYouTubePlayer.destroy();
+                } catch (e) {}
+            }
+
+            currentYouTubePlayer = new YT.Player(containerId, {
+                height: '100%',
+                width: '100%',
+                videoId: videoId,
+                playerVars: {
+                    'autoplay': 1,
+                    'controls': 0,
+                    'showinfo': 0,
+                    'rel': 0,
+                    'modestbranding': 1,
+                    'iv_load_policy': 3,
+                    'enablejsapi': 1,
+                    'origin': window.location.origin
+                },
+                events: {
+                    'onReady': function(event) {
+                        console.log('YouTube player ready, playing video');
+                        event.target.playVideo();
+
+                        // Set timer to load next content
+                        if (currentContent.display_duration && currentContent.display_duration > 0) {
+                            const timeoutId = setTimeout(() => {
+                                console.log('Video duration expired, loading next content');
+                                loadNextContent();
+                            }, currentContent.display_duration * 1000);
+                            currentTimeouts.push(timeoutId);
+                        }
+                    },
+                    'onStateChange': function(event) {
+                        // If video ends, replay it (loop within duration)
+                        if (event.data === YT.PlayerState.ENDED) {
+                            console.log('Video ended, replaying');
+                            event.target.playVideo();
+                        }
+                    },
+                    'onError': function(event) {
+                        console.error('YouTube error:', event.data);
+                        // Fallback to iframe on error
+                        fallbackYouTubeEmbed(containerId, videoId);
+                    }
+                }
+            });
+        }
+
+        function fallbackYouTubeEmbed(containerId, videoId) {
+            const container = document.getElementById(containerId);
+            if (container) {
+                const embedUrl = `https://www.youtube.com/embed/${videoId}?autoplay=1&controls=0&showinfo=0&rel=0&modestbranding=1&enablejsapi=1&origin=${encodeURIComponent(window.location.origin)}&nocache=${Date.now()}`;
+                container.innerHTML = `<iframe src="${embedUrl}" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen style="width:100%;height:100%;"></iframe>`;
+
+                if (currentContent.display_duration && currentContent.display_duration > 0) {
+                    const timeoutId = setTimeout(() => {
+                        loadNextContent();
+                    }, currentContent.display_duration * 1000);
+                    currentTimeouts.push(timeoutId);
+                }
             }
         }
 
@@ -603,17 +640,10 @@ if ($version) $current_version = $version['version'];
             filePath = filePath.replace('uploads/uploads/', 'uploads/');
 
             const viewerUrl = `https://docs.google.com/viewer?url=${encodeURIComponent(window.location.origin + filePath)}&embedded=true`;
-
-            wrapper.innerHTML = `
-                <div class="pdf-container">
-                    <iframe src="${viewerUrl}" class="pdf-iframe" allowfullscreen></iframe>
-                </div>
-            `;
+            wrapper.innerHTML = `<div class="pdf-container"><iframe src="${viewerUrl}" class="pdf-iframe" allowfullscreen></iframe></div>`;
 
             if (currentContent.display_duration && currentContent.display_duration > 0) {
-                const timeoutId = setTimeout(() => {
-                    loadNextContent();
-                }, currentContent.display_duration * 1000);
+                const timeoutId = setTimeout(() => loadNextContent(), currentContent.display_duration * 1000);
                 currentTimeouts.push(timeoutId);
             }
         }
@@ -622,7 +652,6 @@ if ($version) $current_version = $version['version'];
             const wrapper = document.getElementById('contentWrapper');
             const messageType = currentContent.message_type || 'memo';
             const messageText = currentContent.content_data || 'Welcome to ET TV Display';
-
             const icons = {
                 warning: '⚠️',
                 caution: '⚡',
@@ -630,19 +659,10 @@ if ($version) $current_version = $version['version'];
                 congratulation: '🎉'
             };
 
-            wrapper.innerHTML = `
-                <div class="message-container">
-                    <div class="message-card ${messageType}">
-                        <div class="message-icon">${icons[messageType] || '📝'}</div>
-                        <div class="message-text">${escapeHtml(messageText)}</div>
-                    </div>
-                </div>
-            `;
+            wrapper.innerHTML = `<div class="message-container"><div class="message-card ${messageType}"><div class="message-icon">${icons[messageType] || '📝'}</div><div class="message-text">${escapeHtml(messageText)}</div></div></div>`;
 
             if (currentContent.display_duration && currentContent.display_duration > 0) {
-                const timeoutId = setTimeout(() => {
-                    loadNextContent();
-                }, currentContent.display_duration * 1000);
+                const timeoutId = setTimeout(() => loadNextContent(), currentContent.display_duration * 1000);
                 currentTimeouts.push(timeoutId);
             }
         }
@@ -660,17 +680,20 @@ if ($version) $current_version = $version['version'];
                             currentSlides = data.slides || [];
                             currentLayoutData = null;
 
-                            // Parse layout data if multi-image
                             if (currentContent.content_type === 'slideshow' && currentContent.content_data) {
                                 try {
                                     const parsed = JSON.parse(currentContent.content_data);
-                                    if (parsed.type && parsed.images) {
+                                    if (parsed.type && parsed.images && parsed.type !== 'slideshow') {
                                         currentLayoutData = parsed;
                                         currentSlides = [];
                                     }
                                 } catch (e) {}
                             }
-                            loadContent();
+
+                            // Small delay for YouTube to ensure DOM is ready
+                            setTimeout(() => {
+                                loadContent();
+                            }, 100);
                         } else {
                             loadDefaultContent();
                         }
@@ -738,7 +761,7 @@ if ($version) $current_version = $version['version'];
                                         if (currentContent.content_type === 'slideshow' && currentContent.content_data) {
                                             try {
                                                 const parsed = JSON.parse(currentContent.content_data);
-                                                if (parsed.type && parsed.images) {
+                                                if (parsed.type && parsed.images && parsed.type !== 'slideshow') {
                                                     currentLayoutData = parsed;
                                                     currentSlides = [];
                                                 }
@@ -752,6 +775,12 @@ if ($version) $current_version = $version['version'];
                     .catch(error => console.error('Polling error:', error));
             }, 3000);
         }
+
+        // YouTube API callback
+        window.onYouTubeIframeAPIReady = function() {
+            console.log('YouTube API ready');
+            // The player will be created by loadYouTube function
+        };
 
         // Initialize
         document.addEventListener('DOMContentLoaded', function() {
