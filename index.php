@@ -17,28 +17,39 @@ $stmt = $pdo->prepare("SELECT * FROM content WHERE admin_role = ? AND is_active 
 $stmt->execute([$current_mode]);
 $current_content = $stmt->fetch();
 
+// Get slides if slideshow
+$slides = [];
+if ($current_content && $current_content['content_type'] === 'slideshow') {
+    // Check if it's a multi-image layout stored as JSON
+    $data = json_decode($current_content['content_data'], true);
+    if ($data && isset($data['type'])) {
+        // This is a multi-image layout
+        $current_content['layout_data'] = $data;
+    } else {
+        // Traditional slideshow
+        $stmt = $pdo->prepare("SELECT * FROM content_slides WHERE content_id = ? ORDER BY slide_order ASC");
+        $stmt->execute([$current_content['id']]);
+        $slides = $stmt->fetchAll();
+    }
+}
+
 if (!$current_content) {
-    $stmt = $pdo->prepare("SELECT * FROM default_settings WHERE admin_role = ?");
-    $stmt->execute([$current_mode]);
-    $default = $stmt->fetch();
     $current_content = [
         'id' => null,
-        'content_type' => $default['default_content_type'],
-        'content_data' => $default['default_content_data'],
-        'message_type' => $default['default_message_type'],
+        'content_type' => 'message',
+        'content_data' => 'Welcome to LMT TV Display',
+        'message_type' => 'memo',
         'display_duration' => 10,
         'loop_count' => 1,
-        'slide_durations' => null
+        'next_content_id' => null
     ];
 }
 
-// Get slides for slideshow content
-$slides = [];
-if ($current_content['content_type'] === 'slideshow' && $current_content['id']) {
-    $stmt = $pdo->prepare("SELECT * FROM content_slides WHERE content_id = ? ORDER BY slide_order ASC");
-    $stmt->execute([$current_content['id']]);
-    $slides = $stmt->fetchAll();
-}
+$current_version = 1;
+$stmt = $pdo->prepare("SELECT version FROM content_version WHERE admin_role = ?");
+$stmt->execute([$current_mode]);
+$version = $stmt->fetch();
+if ($version) $current_version = $version['version'];
 ?>
 
 <!DOCTYPE html>
@@ -133,6 +144,7 @@ if ($current_content['content_type'] === 'slideshow' && $current_content['id']) 
             justify-content: center;
         }
 
+        /* Slideshow Container */
         .slideshow-container {
             width: 100%;
             height: 100%;
@@ -145,6 +157,8 @@ if ($current_content['content_type'] === 'slideshow' && $current_content['id']) 
             height: 100%;
             object-fit: contain;
             position: absolute;
+            top: 0;
+            left: 0;
             opacity: 0;
             transition: opacity 0.5s ease-in-out;
         }
@@ -153,10 +167,48 @@ if ($current_content['content_type'] === 'slideshow' && $current_content['id']) 
             opacity: 1;
         }
 
+        /* Multi-Image Layouts - Equal division without cropping */
+        .multi-layout {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            background: #000;
+        }
+
+        /* Horizontal layouts (2 and 3 images) */
+        .layout-horizontal {
+            flex-direction: row;
+        }
+
+        /* Grid layout (4 images) */
+        .layout-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            grid-template-rows: 1fr 1fr;
+        }
+
+        /* Individual image containers */
+        .image-container {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #000;
+            padding: 10px;
+        }
+
+        .layout-image {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+
+        /* Video Container */
         .video-container {
             width: 100%;
             height: 100%;
             position: relative;
+            background: #000;
         }
 
         .video-container iframe {
@@ -165,19 +217,21 @@ if ($current_content['content_type'] === 'slideshow' && $current_content['id']) 
             border: none;
         }
 
-        .ppt-container {
+        /* PDF Container */
+        .pdf-container {
             width: 100%;
             height: 100%;
             background: #000;
             position: relative;
         }
 
-        .ppt-iframe {
+        .pdf-iframe {
             width: 100%;
             height: 100%;
             border: none;
         }
 
+        /* Message Styles */
         .message-container {
             width: 100%;
             height: 100%;
@@ -253,16 +307,6 @@ if ($current_content['content_type'] === 'slideshow' && $current_content['id']) 
             font-weight: bold;
         }
 
-        .warning .message-text,
-        .caution .message-text,
-        .memo .message-text {
-            color: #fff;
-        }
-
-        .congratulation .message-text {
-            color: #333;
-        }
-
         .mode-indicator {
             position: fixed;
             bottom: 20px;
@@ -313,10 +357,9 @@ if ($current_content['content_type'] === 'slideshow' && $current_content['id']) 
         let currentMode = '<?php echo $current_mode; ?>';
         let currentContent = <?php echo json_encode($current_content); ?>;
         let currentSlides = <?php echo json_encode($slides); ?>;
-        let currentVersion = <?php echo json_encode($current_version ?? 1); ?>;
+        let currentVersion = <?php echo $current_version; ?>;
         let currentTimeouts = [];
-        let videoLoopCount = 0;
-        let eventSource = null;
+        let pollingInterval = null;
 
         function clearAllTimeouts() {
             currentTimeouts.forEach(timeout => clearTimeout(timeout));
@@ -331,9 +374,11 @@ if ($current_content['content_type'] === 'slideshow' && $current_content['id']) 
             fetch(`get_content.php?mode=${mode}&t=${Date.now()}`)
                 .then(response => response.json())
                 .then(data => {
-                    currentContent = data.content;
-                    currentSlides = data.slides || [];
-                    loadContent();
+                    if (data.success && data.content) {
+                        currentContent = data.content;
+                        currentSlides = data.slides || [];
+                        loadContent();
+                    }
                 })
                 .catch(error => console.error('Error:', error));
 
@@ -344,9 +389,34 @@ if ($current_content['content_type'] === 'slideshow' && $current_content['id']) 
             const wrapper = document.getElementById('contentWrapper');
             clearAllTimeouts();
 
+            console.log('Loading content type:', currentContent.content_type);
+
+            if (!currentContent || !currentContent.content_type) {
+                console.error('Invalid content structure');
+                loadDefaultContent();
+                return;
+            }
+
             switch (currentContent.content_type) {
                 case 'slideshow':
-                    loadSlideshow();
+                    // Check if it's a multi-image layout
+                    if (currentContent.layout_data && currentContent.layout_data.type) {
+                        loadMultiImageLayout(currentContent.layout_data);
+                    } else if (currentSlides && currentSlides.length > 0) {
+                        loadSlideshow();
+                    } else {
+                        // Try to parse content_data
+                        try {
+                            const layoutData = JSON.parse(currentContent.content_data);
+                            if (layoutData.type && layoutData.images) {
+                                loadMultiImageLayout(layoutData);
+                                return;
+                            }
+                        } catch (e) {
+                            // Not JSON
+                        }
+                        loadMessage();
+                    }
                     break;
                 case 'youtube':
                     loadYouTube();
@@ -355,7 +425,7 @@ if ($current_content['content_type'] === 'slideshow' && $current_content['id']) 
                     loadMessage();
                     break;
                 case 'ppt':
-                    loadPPT();
+                    loadPDF();
                     break;
                 default:
                     loadMessage();
@@ -370,9 +440,20 @@ if ($current_content['content_type'] === 'slideshow' && $current_content['id']) 
                 return;
             }
 
+            console.log('Loading slideshow with', currentSlides.length, 'slides');
+
             let html = '<div class="slideshow-container">';
             currentSlides.forEach((slide, index) => {
-                html += `<img src="${slide.image_path}" class="slide-image" data-index="${index}" style="opacity: ${index === 0 ? 1 : 0}">`;
+                let imagePath = slide.image_path;
+                if (!imagePath.startsWith('/') && !imagePath.startsWith('http')) {
+                    imagePath = '/' + imagePath;
+                }
+
+                html += `<img src="${imagePath}" 
+                               class="slide-image" 
+                               data-index="${index}" 
+                               style="opacity: ${index === 0 ? 1 : 0};"
+                               onerror="this.src='/uploads/placeholder.png'">`;
             });
             html += '</div>';
             wrapper.innerHTML = html;
@@ -380,7 +461,14 @@ if ($current_content['content_type'] === 'slideshow' && $current_content['id']) 
             let currentIndex = 0;
             const slides = document.querySelectorAll('.slide-image');
 
+            if (slides.length === 0) {
+                loadMessage();
+                return;
+            }
+
             function showNextSlide() {
+                if (!slides.length) return;
+
                 slides[currentIndex].style.opacity = '0';
                 currentIndex = (currentIndex + 1) % slides.length;
                 slides[currentIndex].style.opacity = '1';
@@ -390,14 +478,80 @@ if ($current_content['content_type'] === 'slideshow' && $current_content['id']) 
                 currentTimeouts.push(timeoutId);
             }
 
-            // Start slideshow with first slide duration
-            const firstDuration = currentSlides[0]?.duration || 10;
             if (slides.length > 1) {
+                const firstDuration = currentSlides[0]?.duration || 10;
                 const timeoutId = setTimeout(showNextSlide, firstDuration * 1000);
                 currentTimeouts.push(timeoutId);
             }
 
-            // Schedule content expiry if needed
+            // Schedule content expiry
+            if (currentContent.display_duration && currentContent.display_duration > 0) {
+                const expiryTimeoutId = setTimeout(() => {
+                    loadNextContent();
+                }, currentContent.display_duration * 1000);
+                currentTimeouts.push(expiryTimeoutId);
+            }
+        }
+
+        function loadMultiImageLayout(layoutData) {
+            const wrapper = document.getElementById('contentWrapper');
+            const layoutType = layoutData.type;
+            const images = layoutData.images;
+
+            let containerClass = 'multi-layout';
+            let layoutClass = '';
+
+            switch (layoutType) {
+                case '2-image':
+                    containerClass += ' layout-horizontal';
+                    layoutClass = 'two-images';
+                    break;
+                case '3-image':
+                    containerClass += ' layout-horizontal';
+                    layoutClass = 'three-images';
+                    break;
+                case '4-image':
+                    containerClass = 'multi-layout layout-grid';
+                    layoutClass = 'four-images';
+                    break;
+                default:
+                    containerClass += ' layout-horizontal';
+            }
+
+            let html = `<div class="${containerClass}" style="width: 100%; height: 100%;">`;
+
+            if (layoutType === '4-image') {
+                // Grid layout
+                html += `<div style="display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; width: 100%; height: 100%; gap: 10px; padding: 10px;">`;
+                images.forEach(image => {
+                    let imagePath = image.path;
+                    if (!imagePath.startsWith('/') && !imagePath.startsWith('http')) {
+                        imagePath = '/' + imagePath;
+                    }
+                    html += `<div style="display: flex; align-items: center; justify-content: center; background: #000;">
+                                <img src="${imagePath}" style="width: 100%; height: 100%; object-fit: contain;" onerror="this.src='/uploads/placeholder.png'">
+                            </div>`;
+                });
+                html += `</div>`;
+            } else {
+                // Horizontal layouts (2 or 3 images)
+                html += `<div style="display: flex; width: 100%; height: 100%; gap: 10px; padding: 10px;">`;
+                images.forEach(image => {
+                    let imagePath = image.path;
+                    if (!imagePath.startsWith('/') && !imagePath.startsWith('http')) {
+                        imagePath = '/' + imagePath;
+                    }
+                    html += `<div style="flex: 1; display: flex; align-items: center; justify-content: center; background: #000;">
+                                <img src="${imagePath}" style="width: 100%; height: 100%; object-fit: contain;" onerror="this.src='/uploads/placeholder.png'">
+                            </div>`;
+                });
+                html += `</div>`;
+            }
+
+            html += `</div>`;
+            wrapper.innerHTML = html;
+
+            // Schedule expiry
             if (currentContent.display_duration && currentContent.display_duration > 0) {
                 const timeoutId = setTimeout(() => {
                     loadNextContent();
@@ -408,11 +562,14 @@ if ($current_content['content_type'] === 'slideshow' && $current_content['id']) 
 
         function loadYouTube() {
             const wrapper = document.getElementById('contentWrapper');
-            const videoId = extractYouTubeId(currentContent.content_data);
+            let videoUrl = currentContent.content_data;
+
+            const videoId = extractYouTubeId(videoUrl);
+            const embedUrl = `https://www.youtube.com/embed/${videoId}?autoplay=1&loop=1&playlist=${videoId}&controls=0&showinfo=0&rel=0&modestbranding=1&iv_load_policy=3`;
 
             wrapper.innerHTML = `
                 <div class="video-container">
-                    <iframe id="youtubePlayer" src="https://www.youtube.com/embed/${videoId}?autoplay=1&enablejsapi=1" 
+                    <iframe src="${embedUrl}" 
                             frameborder="0" 
                             allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
                             allowfullscreen>
@@ -420,43 +577,43 @@ if ($current_content['content_type'] === 'slideshow' && $current_content['id']) 
                 </div>
             `;
 
-            videoLoopCount = 0;
+            let playCount = 0;
             const totalDuration = currentContent.display_duration * currentContent.loop_count;
 
-            function handleVideoEnd() {
-                videoLoopCount++;
-                if (videoLoopCount < currentContent.loop_count) {
-                    const iframe = document.getElementById('youtubePlayer');
-                    iframe.src = iframe.src;
-                    const timeoutId = setTimeout(handleVideoEnd, totalDuration * 1000);
-                    currentTimeouts.push(timeoutId);
+            const timeoutId = setTimeout(() => {
+                playCount++;
+                if (playCount < currentContent.loop_count) {
+                    const iframe = wrapper.querySelector('iframe');
+                    iframe.src = embedUrl;
                 } else {
                     loadNextContent();
                 }
-            }
-
-            const timeoutId = setTimeout(handleVideoEnd, totalDuration * 1000);
+            }, totalDuration * 1000);
             currentTimeouts.push(timeoutId);
         }
 
-        function loadPPT() {
+        function loadPDF() {
             const wrapper = document.getElementById('contentWrapper');
-            let pptData;
+            let pdfData;
 
             try {
-                pptData = JSON.parse(currentContent.content_data);
+                pdfData = JSON.parse(currentContent.content_data);
             } catch (e) {
-                console.error('Invalid PPT data');
-                loadMessage();
-                return;
+                pdfData = {
+                    file_path: currentContent.content_data
+                };
             }
 
-            // Use Google Docs viewer for better PPT support
-            const viewerUrl = `https://docs.google.com/viewer?url=${encodeURIComponent(window.location.origin + '/' + pptData.file_path)}&embedded=true`;
+            let filePath = pdfData.file_path;
+            if (!filePath.startsWith('/') && !filePath.startsWith('http')) {
+                filePath = '/' + filePath;
+            }
+
+            const viewerUrl = `https://docs.google.com/viewer?url=${encodeURIComponent(window.location.origin + filePath)}&embedded=true`;
 
             wrapper.innerHTML = `
-                <div class="ppt-container">
-                    <iframe src="${viewerUrl}" class="ppt-iframe" allowfullscreen></iframe>
+                <div class="pdf-container">
+                    <iframe src="${viewerUrl}" class="pdf-iframe" allowfullscreen></iframe>
                 </div>
             `;
 
@@ -471,7 +628,7 @@ if ($current_content['content_type'] === 'slideshow' && $current_content['id']) 
         function loadMessage() {
             const wrapper = document.getElementById('contentWrapper');
             const messageType = currentContent.message_type || 'memo';
-            const messageText = currentContent.content_data;
+            const messageText = currentContent.content_data || 'Welcome to ET TV Display';
 
             const icons = {
                 warning: '⚠️',
@@ -498,13 +655,17 @@ if ($current_content['content_type'] === 'slideshow' && $current_content['id']) 
         }
 
         function loadNextContent() {
-            if (currentContent.next_content_id) {
-                fetch(`get_content.php?id=${currentContent.next_content_id}`)
+            if (currentContent.next_content_id && currentContent.next_content_id !== null) {
+                fetch(`get_content.php?id=${currentContent.next_content_id}&t=${Date.now()}`)
                     .then(response => response.json())
                     .then(data => {
-                        currentContent = data.content;
-                        currentSlides = data.slides || [];
-                        loadContent();
+                        if (data.success && data.content) {
+                            currentContent = data.content;
+                            currentSlides = data.slides || [];
+                            loadContent();
+                        } else {
+                            loadDefaultContent();
+                        }
                     })
                     .catch(error => {
                         console.error('Error loading next content:', error);
@@ -516,20 +677,29 @@ if ($current_content['content_type'] === 'slideshow' && $current_content['id']) 
         }
 
         function loadDefaultContent() {
-            fetch(`get_content.php?mode=${currentMode}&default=true`)
+            fetch(`get_content.php?mode=${currentMode}&default=true&t=${Date.now()}`)
                 .then(response => response.json())
                 .then(data => {
-                    currentContent = data.content;
-                    currentSlides = data.slides || [];
-                    loadContent();
+                    if (data.success && data.content) {
+                        currentContent = data.content;
+                        currentSlides = data.slides || [];
+                        loadContent();
+                    }
                 })
                 .catch(error => console.error('Error loading default content:', error));
         }
 
         function extractYouTubeId(url) {
-            const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|&v=)([^#&?]*).*/;
-            const match = url.match(regExp);
-            return (match && match[2].length === 11) ? match[2] : url;
+            const patterns = [
+                /(?:youtube\.com\/watch\?v=)([^&]+)/,
+                /(?:youtu\.be\/)([^?]+)/,
+                /(?:youtube\.com\/embed\/)([^?]+)/
+            ];
+            for (const pattern of patterns) {
+                const match = url.match(pattern);
+                if (match) return match[1];
+            }
+            return url;
         }
 
         function escapeHtml(text) {
@@ -538,44 +708,35 @@ if ($current_content['content_type'] === 'slideshow' && $current_content['id']) 
             return div.innerHTML;
         }
 
-        function startRealTimeUpdates() {
-            // Use SSE only (more efficient)
-            if (eventSource) {
-                eventSource.close();
-            }
+        function startPolling() {
+            if (pollingInterval) clearInterval(pollingInterval);
 
-            eventSource = new EventSource('sse_updates.php');
-
-            eventSource.onmessage = function(event) {
-                try {
-                    const data = JSON.parse(event.data);
-                    if (data.mode === currentMode) {
-                        fetch(`get_content.php?mode=${currentMode}&t=${Date.now()}`)
-                            .then(response => response.json())
-                            .then(data => {
-                                currentContent = data.content;
-                                currentSlides = data.slides || [];
-                                loadContent();
-                            });
-                    }
-                } catch (e) {
-                    console.error('SSE error:', e);
-                }
-            };
-
-            eventSource.onerror = function() {
-                console.log('SSE connection lost, reconnecting in 5 seconds...');
-                eventSource.close();
-                setTimeout(startRealTimeUpdates, 5000);
-            };
+            pollingInterval = setInterval(function() {
+                fetch(`check_version.php?mode=${currentMode}&version=${currentVersion}`)
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.has_update) {
+                            currentVersion = data.new_version;
+                            fetch(`get_content.php?mode=${currentMode}&t=${Date.now()}`)
+                                .then(response => response.json())
+                                .then(data => {
+                                    if (data.success && data.content) {
+                                        currentContent = data.content;
+                                        currentSlides = data.slides || [];
+                                        loadContent();
+                                    }
+                                });
+                        }
+                    })
+                    .catch(error => console.error('Polling error:', error));
+            }, 3000);
         }
 
         // Initialize
         document.addEventListener('DOMContentLoaded', function() {
             loadContent();
-            startRealTimeUpdates();
+            startPolling();
 
-            // Nav dropdown functionality
             const navDropdown = document.getElementById('navDropdown');
             let hoverTimer;
 

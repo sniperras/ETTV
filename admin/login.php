@@ -1,5 +1,16 @@
 <?php
+// admin/login.php - Improved version
 require_once '../config/db.php';
+
+// Redirect if already logged in
+if (isset($_SESSION['user_id'])) {
+    if ($_SESSION['role'] === 'lmtadmin') {
+        header('Location: ../lmt/lmtadmin.php');
+    } elseif ($_SESSION['role'] === 'bmtadmin') {
+        header('Location: ../bmt/bmtadmin.php');
+    }
+    exit();
+}
 
 $error = '';
 
@@ -7,25 +18,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $username = trim($_POST['username']);
     $password = $_POST['password'];
 
-    $stmt = $pdo->prepare("SELECT * FROM users WHERE username = ?");
-    $stmt->execute([$username]);
-    $user = $stmt->fetch();
-
-    if ($user && password_verify($password, $user['password'])) {
-        $_SESSION['user_id'] = $user['id'];
-        $_SESSION['username'] = $user['username'];
-        $_SESSION['role'] = $user['role'];
-        $_SESSION['login_time'] = time();
-
-        if ($user['role'] == 'lmtadmin') {
-            header('Location: ../lmt/lmtadmin.php');
-        } else {
-            header('Location: ../bmt/bmtadmin.php');
-        }
-        exit();
+    if (empty($username) || empty($password)) {
+        $error = 'Please enter both username and password';
     } else {
-        $error = 'Invalid username or password';
-        error_log("Failed login attempt for username: $username");
+        try {
+            $stmt = $pdo->prepare("SELECT * FROM users WHERE username = ?");
+            $stmt->execute([$username]);
+            $user = $stmt->fetch();
+
+            if ($user && password_verify($password, $user['password'])) {
+                $_SESSION['user_id'] = $user['id'];
+                $_SESSION['username'] = $user['username'];
+                $_SESSION['role'] = $user['role'];
+                $_SESSION['login_time'] = time();
+
+                if ($user['role'] == 'lmtadmin') {
+                    header('Location: ../lmt/lmtadmin.php');
+                } else {
+                    header('Location: ../bmt/bmtadmin.php');
+                }
+                exit();
+            } else {
+                $error = 'Invalid username or password';
+                error_log("Failed login attempt for username: $username from " . $_SERVER['REMOTE_ADDR']);
+            }
+        } catch (PDOException $e) {
+            $error = 'Database error. Please try again later.';
+            error_log("Login database error: " . $e->getMessage());
+        }
     }
 }
 ?>
@@ -125,6 +145,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             font-size: 12px;
             color: #666;
         }
+
+        .test-link {
+            text-align: center;
+            margin-top: 15px;
+        }
+
+        .test-link a {
+            color: #667eea;
+            text-decoration: none;
+            font-size: 12px;
+        }
+
+        .test-link a:hover {
+            text-decoration: underline;
+        }
     </style>
 </head>
 
@@ -147,6 +182,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         </form>
         <div class="info">
             Secure Admin Access Only
+        </div>
+        <div class="test-link">
+            <a href="/ettv/test_db.php">Test Database Connection</a>
         </div>
     </div>
 </body>
