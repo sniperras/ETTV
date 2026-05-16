@@ -23,12 +23,10 @@ $slides = [];
 
 if ($current_content) {
     if ($current_content['content_type'] === 'slideshow') {
-        // Try to parse as JSON first (for multi-image layouts)
         $parsed = json_decode($current_content['content_data'], true);
         if ($parsed && isset($parsed['type']) && $parsed['type'] !== 'slideshow') {
             $layout_data = $parsed;
         } else {
-            // Traditional slideshow - get from content_slides table
             $stmt = $pdo->prepare("SELECT * FROM content_slides WHERE content_id = ? ORDER BY slide_order ASC");
             $stmt->execute([$current_content['id']]);
             $slides = $stmt->fetchAll();
@@ -266,16 +264,6 @@ if ($version) $current_version = $version['version'];
             font-weight: bold;
         }
 
-        .warning .message-text,
-        .caution .message-text,
-        .memo .message-text {
-            color: #fff;
-        }
-
-        .congratulation .message-text {
-            color: #333;
-        }
-
         .mode-indicator {
             position: fixed;
             bottom: 20px;
@@ -331,17 +319,31 @@ if ($version) $current_version = $version['version'];
         let currentTimeouts = [];
         let pollingInterval = null;
         let currentYouTubePlayer = null;
-        let youTubeApiLoaded = false;
 
         function clearAllTimeouts() {
             currentTimeouts.forEach(timeout => clearTimeout(timeout));
             currentTimeouts = [];
-            // Destroy YouTube player if exists
             if (currentYouTubePlayer && typeof currentYouTubePlayer.destroy === 'function') {
                 try {
                     currentYouTubePlayer.destroy();
                 } catch (e) {}
                 currentYouTubePlayer = null;
+            }
+        }
+
+        function updateCurrentContent(data) {
+            currentContent = data.content;
+            currentSlides = data.slides || [];
+            currentLayoutData = null;
+
+            if (currentContent.content_type === 'slideshow' && currentContent.content_data) {
+                try {
+                    const parsed = JSON.parse(currentContent.content_data);
+                    if (parsed.type && parsed.images && parsed.type !== 'slideshow') {
+                        currentLayoutData = parsed;
+                        currentSlides = [];
+                    }
+                } catch (e) {}
             }
         }
 
@@ -354,19 +356,7 @@ if ($version) $current_version = $version['version'];
                 .then(response => response.json())
                 .then(data => {
                     if (data.success && data.content) {
-                        currentContent = data.content;
-                        currentSlides = data.slides || [];
-                        currentLayoutData = null;
-
-                        if (currentContent.content_type === 'slideshow' && currentContent.content_data) {
-                            try {
-                                const parsed = JSON.parse(currentContent.content_data);
-                                if (parsed.type && parsed.images && parsed.type !== 'slideshow') {
-                                    currentLayoutData = parsed;
-                                    currentSlides = [];
-                                }
-                            } catch (e) {}
-                        }
+                        updateCurrentContent(data);
                         loadContent();
                     }
                 })
@@ -383,7 +373,6 @@ if ($version) $current_version = $version['version'];
 
             if (!currentContent || !currentContent.content_type) {
                 console.error('Invalid content structure');
-                loadDefaultContent();
                 return;
             }
 
@@ -426,8 +415,6 @@ if ($version) $current_version = $version['version'];
                 return;
             }
 
-            console.log('Loading slideshow with', currentSlides.length, 'slides');
-
             let html = '<div class="slideshow-container">';
             currentSlides.forEach((slide, index) => {
                 let imagePath = slide.image_path || slide.path;
@@ -435,7 +422,6 @@ if ($version) $current_version = $version['version'];
                     imagePath = '/' + imagePath;
                 }
                 imagePath = imagePath.replace('uploads/uploads/', 'uploads/');
-
                 html += `<img src="${imagePath}" class="slide-image" data-index="${index}" style="opacity: ${index === 0 ? 1 : 0};" onerror="this.style.display='none'">`;
             });
             html += '</div>';
@@ -454,7 +440,6 @@ if ($version) $current_version = $version['version'];
                 slides[currentIndex].style.opacity = '0';
                 currentIndex = (currentIndex + 1) % slides.length;
                 slides[currentIndex].style.opacity = '1';
-
                 const duration = (currentSlides[currentIndex]?.duration || 10) * 1000;
                 const timeoutId = setTimeout(showNextSlide, duration);
                 currentTimeouts.push(timeoutId);
@@ -467,10 +452,7 @@ if ($version) $current_version = $version['version'];
             }
 
             if (currentContent.display_duration && currentContent.display_duration > 0) {
-                const expiryTimeoutId = setTimeout(() => {
-                    console.log('Slideshow duration expired');
-                    loadNextContent();
-                }, currentContent.display_duration * 1000);
+                const expiryTimeoutId = setTimeout(() => loadNextContent(), currentContent.display_duration * 1000);
                 currentTimeouts.push(expiryTimeoutId);
             }
         }
@@ -491,68 +473,54 @@ if ($version) $current_version = $version['version'];
 
             if (layoutType === '4-image') {
                 html = `<div style="display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; width: 100vw; height: 100vh; gap: ${gap}px; padding: ${padding}px; background: #000; box-sizing: border-box;">`;
-                images.forEach(image => {
-                    let imagePath = image.path;
-                    if (!imagePath.startsWith('/') && !imagePath.startsWith('http')) {
-                        imagePath = '/' + imagePath;
-                    }
-                    imagePath = imagePath.replace('uploads/uploads/', 'uploads/');
-                    html += `<div style="display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; overflow: hidden;">
-                                <img src="${imagePath}" style="width: 100%; height: 100%; object-fit: contain;" onerror="this.style.display='none'">
-                            </div>`;
-                });
-                html += `</div>`;
             } else {
                 const columns = layoutType === '2-image' ? '1fr 1fr' : '1fr 1fr 1fr';
                 html = `<div style="display: grid; grid-template-columns: ${columns}; width: 100vw; height: 100vh; gap: ${gap}px; padding: ${padding}px; background: #000; box-sizing: border-box;">`;
-                images.forEach(image => {
-                    let imagePath = image.path;
-                    if (!imagePath.startsWith('/') && !imagePath.startsWith('http')) {
-                        imagePath = '/' + imagePath;
-                    }
-                    imagePath = imagePath.replace('uploads/uploads/', 'uploads/');
-                    html += `<div style="display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; overflow: hidden;">
-                                <img src="${imagePath}" style="width: 100%; height: 100%; object-fit: contain;" onerror="this.style.display='none'">
-                            </div>`;
-                });
-                html += `</div>`;
             }
 
+            images.forEach(image => {
+                let imagePath = image.path;
+                if (!imagePath.startsWith('/') && !imagePath.startsWith('http')) {
+                    imagePath = '/' + imagePath;
+                }
+                imagePath = imagePath.replace('uploads/uploads/', 'uploads/');
+                html += `<div style="display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; overflow: hidden;">
+                            <img src="${imagePath}" style="width: 100%; height: 100%; object-fit: contain;" onerror="this.style.display='none'">
+                        </div>`;
+            });
+            html += `</div>`;
             wrapper.innerHTML = html;
 
             if (currentContent.display_duration && currentContent.display_duration > 0) {
-                const timeoutId = setTimeout(() => {
-                    console.log('Multi-image layout duration expired');
-                    loadNextContent();
-                }, currentContent.display_duration * 1000);
+                const timeoutId = setTimeout(() => loadNextContent(), currentContent.display_duration * 1000);
                 currentTimeouts.push(timeoutId);
             }
         }
 
         function loadYouTube() {
             const wrapper = document.getElementById('contentWrapper');
-            let videoUrl = currentContent.content_data;
-            const videoId = extractYouTubeId(videoUrl);
+            const videoId = extractYouTubeId(currentContent.content_data);
+            const containerId = 'yt-player-' + Date.now();
 
-            // Create container for YouTube player
-            const containerId = 'youtube-player-' + Date.now();
-            wrapper.innerHTML = `<div id="${containerId}" class="video-container" style="width: 100%; height: 100%;"></div>`;
+            wrapper.innerHTML = `<div id="${containerId}" style="width:100%;height:100%;background:#000;"></div>`;
 
-            // Load YouTube API if not loaded
-            if (typeof YT === 'undefined') {
-                window.youtubeCallback = function() {
+            // Wait for DOM to paint before creating player
+            requestAnimationFrame(() => {
+                if (typeof YT !== 'undefined' && YT.Player) {
                     createYouTubePlayer(containerId, videoId);
-                };
-
-                const tag = document.createElement('script');
-                tag.src = 'https://www.youtube.com/iframe_api';
-                tag.onload = function() {
-                    // API will call onYouTubeIframeAPIReady
-                };
-                document.head.appendChild(tag);
-            } else {
-                createYouTubePlayer(containerId, videoId);
-            }
+                } else {
+                    window._pendingYouTube = {
+                        containerId,
+                        videoId
+                    };
+                    if (!document.getElementById('yt-api-script')) {
+                        const tag = document.createElement('script');
+                        tag.id = 'yt-api-script';
+                        tag.src = 'https://www.youtube.com/iframe_api';
+                        document.head.appendChild(tag);
+                    }
+                }
+            });
         }
 
         function createYouTubePlayer(containerId, videoId) {
@@ -568,6 +536,7 @@ if ($version) $current_version = $version['version'];
                 videoId: videoId,
                 playerVars: {
                     'autoplay': 1,
+                    'mute': 1, // REQUIRED for autoplay in browsers
                     'controls': 0,
                     'showinfo': 0,
                     'rel': 0,
@@ -579,9 +548,9 @@ if ($version) $current_version = $version['version'];
                 events: {
                     'onReady': function(event) {
                         console.log('YouTube player ready, playing video');
+                        event.target.mute();
                         event.target.playVideo();
 
-                        // Set timer to load next content
                         if (currentContent.display_duration && currentContent.display_duration > 0) {
                             const timeoutId = setTimeout(() => {
                                 console.log('Video duration expired, loading next content');
@@ -591,7 +560,6 @@ if ($version) $current_version = $version['version'];
                         }
                     },
                     'onStateChange': function(event) {
-                        // If video ends, replay it (loop within duration)
                         if (event.data === YT.PlayerState.ENDED) {
                             console.log('Video ended, replaying');
                             event.target.playVideo();
@@ -599,7 +567,6 @@ if ($version) $current_version = $version['version'];
                     },
                     'onError': function(event) {
                         console.error('YouTube error:', event.data);
-                        // Fallback to iframe on error
                         fallbackYouTubeEmbed(containerId, videoId);
                     }
                 }
@@ -609,13 +576,11 @@ if ($version) $current_version = $version['version'];
         function fallbackYouTubeEmbed(containerId, videoId) {
             const container = document.getElementById(containerId);
             if (container) {
-                const embedUrl = `https://www.youtube.com/embed/${videoId}?autoplay=1&controls=0&showinfo=0&rel=0&modestbranding=1&enablejsapi=1&origin=${encodeURIComponent(window.location.origin)}&nocache=${Date.now()}`;
+                const embedUrl = `https://www.youtube.com/embed/${videoId}?autoplay=1&mute=1&controls=0&showinfo=0&rel=0&modestbranding=1&enablejsapi=1&origin=${encodeURIComponent(window.location.origin)}&nocache=${Date.now()}`;
                 container.innerHTML = `<iframe src="${embedUrl}" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen style="width:100%;height:100%;"></iframe>`;
 
                 if (currentContent.display_duration && currentContent.display_duration > 0) {
-                    const timeoutId = setTimeout(() => {
-                        loadNextContent();
-                    }, currentContent.display_duration * 1000);
+                    const timeoutId = setTimeout(() => loadNextContent(), currentContent.display_duration * 1000);
                     currentTimeouts.push(timeoutId);
                 }
             }
@@ -668,58 +633,30 @@ if ($version) $current_version = $version['version'];
         }
 
         function loadNextContent() {
+            const nextId = parseInt(currentContent.next_content_id);
             console.log('Loading next content, next_content_id:', currentContent.next_content_id);
 
-            if (currentContent.next_content_id && currentContent.next_content_id !== null && currentContent.next_content_id !== '') {
-                const nextId = parseInt(currentContent.next_content_id);
+            // Valid next content ID exists
+            if (!isNaN(nextId) && nextId > 0) {
                 fetch(`get_content.php?id=${nextId}&t=${Date.now()}`)
                     .then(response => response.json())
                     .then(data => {
                         if (data.success && data.content) {
-                            currentContent = data.content;
-                            currentSlides = data.slides || [];
-                            currentLayoutData = null;
-
-                            if (currentContent.content_type === 'slideshow' && currentContent.content_data) {
-                                try {
-                                    const parsed = JSON.parse(currentContent.content_data);
-                                    if (parsed.type && parsed.images && parsed.type !== 'slideshow') {
-                                        currentLayoutData = parsed;
-                                        currentSlides = [];
-                                    }
-                                } catch (e) {}
-                            }
-
-                            // Small delay for YouTube to ensure DOM is ready
-                            setTimeout(() => {
-                                loadContent();
-                            }, 100);
+                            updateCurrentContent(data);
+                            setTimeout(() => loadContent(), 100);
                         } else {
-                            loadDefaultContent();
+                            console.log('Next content not found, waiting for admin to publish new content');
+                            // Don't loop - let polling handle updates
                         }
                     })
                     .catch(error => {
                         console.error('Error loading next content:', error);
-                        loadDefaultContent();
                     });
             } else {
-                loadDefaultContent();
+                // No next content - content chain ended, stop here
+                // Polling will pick up new content when admin publishes
+                console.log('Content chain ended, waiting for new content from admin');
             }
-        }
-
-        function loadDefaultContent() {
-            console.log('Loading default content');
-            fetch(`get_content.php?mode=${currentMode}&default=true&t=${Date.now()}`)
-                .then(response => response.json())
-                .then(data => {
-                    if (data.success && data.content) {
-                        currentContent = data.content;
-                        currentSlides = data.slides || [];
-                        currentLayoutData = null;
-                        loadContent();
-                    }
-                })
-                .catch(error => console.error('Error loading default content:', error));
         }
 
         function extractYouTubeId(url) {
@@ -749,37 +686,34 @@ if ($version) $current_version = $version['version'];
                     .then(response => response.json())
                     .then(data => {
                         if (data.has_update) {
+                            console.log('Update detected, refreshing content');
                             currentVersion = data.new_version;
                             fetch(`get_content.php?mode=${currentMode}&t=${Date.now()}`)
                                 .then(response => response.json())
                                 .then(data => {
                                     if (data.success && data.content) {
-                                        currentContent = data.content;
-                                        currentSlides = data.slides || [];
-                                        currentLayoutData = null;
-
-                                        if (currentContent.content_type === 'slideshow' && currentContent.content_data) {
-                                            try {
-                                                const parsed = JSON.parse(currentContent.content_data);
-                                                if (parsed.type && parsed.images && parsed.type !== 'slideshow') {
-                                                    currentLayoutData = parsed;
-                                                    currentSlides = [];
-                                                }
-                                            } catch (e) {}
-                                        }
+                                        updateCurrentContent(data);
                                         loadContent();
                                     }
-                                });
+                                })
+                                .catch(error => console.error('Fetch error:', error));
                         }
                     })
                     .catch(error => console.error('Polling error:', error));
-            }, 3000);
+            }, 5000); // Check every 5 seconds
         }
 
         // YouTube API callback
         window.onYouTubeIframeAPIReady = function() {
             console.log('YouTube API ready');
-            // The player will be created by loadYouTube function
+            if (window._pendingYouTube) {
+                const {
+                    containerId,
+                    videoId
+                } = window._pendingYouTube;
+                window._pendingYouTube = null;
+                createYouTubePlayer(containerId, videoId);
+            }
         };
 
         // Initialize
