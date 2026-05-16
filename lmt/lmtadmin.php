@@ -396,9 +396,12 @@ $existing_content = $stmt->fetchAll();
 </head>
 
 <body>
+
     <div class="header">
         <h1>LMT Admin Dashboard</h1>
+        <a href="../lmt/lmtadmin_order.php" class="logout-btn">Manage the Display</a>
         <a href="../admin/logout.php" class="logout-btn">Logout</a>
+
     </div>
 
     <div class="container">
