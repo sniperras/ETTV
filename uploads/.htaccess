@@ -1,0 +1,10 @@
+# uploads/.htaccess
+Options -Indexes
+<FilesMatch "\.(php|php3|php4|php5|phtml|pl|py|jsp|asp|htm|shtml|sh|cgi)$">
+    Deny from all
+</FilesMatch>
+
+# Allow only image and document files
+<FilesMatch "\.(jpg|jpeg|png|gif|bmp|pdf|ppt|pptx)$">
+    Allow from all
+</FilesMatch>

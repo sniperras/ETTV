@@ -4,7 +4,7 @@ require_once '../config/db.php';
 $error = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $username = $_POST['username'];
+    $username = trim($_POST['username']);
     $password = $_POST['password'];
 
     $stmt = $pdo->prepare("SELECT * FROM users WHERE username = ?");
@@ -15,6 +15,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $_SESSION['user_id'] = $user['id'];
         $_SESSION['username'] = $user['username'];
         $_SESSION['role'] = $user['role'];
+        $_SESSION['login_time'] = time();
 
         if ($user['role'] == 'lmtadmin') {
             header('Location: ../lmt/lmtadmin.php');
@@ -24,6 +25,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit();
     } else {
         $error = 'Invalid username or password';
+        error_log("Failed login attempt for username: $username");
     }
 }
 ?>
@@ -116,6 +118,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             margin-bottom: 20px;
             text-align: center;
         }
+
+        .info {
+            text-align: center;
+            margin-top: 20px;
+            font-size: 12px;
+            color: #666;
+        }
     </style>
 </head>
 
@@ -123,12 +132,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <div class="login-container">
         <h2>ET TV Admin Login</h2>
         <?php if ($error): ?>
-            <div class="error"><?php echo $error; ?></div>
+            <div class="error"><?php echo htmlspecialchars($error); ?></div>
         <?php endif; ?>
         <form method="POST">
             <div class="form-group">
                 <label>Username</label>
-                <input type="text" name="username" required>
+                <input type="text" name="username" required autofocus>
             </div>
             <div class="form-group">
                 <label>Password</label>
@@ -136,6 +145,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             </div>
             <button type="submit">Login</button>
         </form>
+        <div class="info">
+            Secure Admin Access Only
+        </div>
     </div>
 </body>
 
