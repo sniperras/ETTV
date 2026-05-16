@@ -1,29 +1,85 @@
 <?php
-// get_content.php
+// get_content.php - Final Production Version
 header('Content-Type: application/json');
 header('Cache-Control: no-cache, must-revalidate');
 
-require_once 'config/db.php';
+// Error handling - convert all errors to JSON responses
+error_reporting(E_ALL);
+ini_set('display_errors', 0);
+
+function jsonErrorHandler($errno, $errstr, $errfile, $errline)
+{
+    echo json_encode([
+        'success' => false,
+        'error' => "Error: $errstr in $errfile on line $errline"
+    ]);
+    exit();
+}
+set_error_handler('jsonErrorHandler');
+
+function jsonExceptionHandler($e)
+{
+    echo json_encode([
+        'success' => false,
+        'error' => $e->getMessage()
+    ]);
+    exit();
+}
+set_exception_handler('jsonExceptionHandler');
+
+// Database connection - try multiple paths for compatibility
+$paths_to_try = [
+    __DIR__ . '/config/db.php',
+    __DIR__ . '/../config/db.php',
+    dirname(__DIR__) . '/config/db.php',
+    $_SERVER['DOCUMENT_ROOT'] . '/ettv/config/db.php'
+];
+
+$db_loaded = false;
+foreach ($paths_to_try as $path) {
+    if (file_exists($path)) {
+        require_once $path;
+        $db_loaded = true;
+        break;
+    }
+}
+
+if (!$db_loaded || !isset($pdo)) {
+    echo json_encode([
+        'success' => false,
+        'error' => 'Database configuration not found'
+    ]);
+    exit();
+}
+
+// Helper function to validate mode
+function validateMode($mode)
+{
+    return in_array($mode, ['lmt', 'bmt']);
+}
+
+// Helper function to get slides for a content
+function getSlides($pdo, $content_id)
+{
+    $slides = [];
+    $stmt = $pdo->prepare("SELECT * FROM content_slides WHERE content_id = ? ORDER BY slide_order ASC");
+    $stmt->execute([$content_id]);
+    return $stmt->fetchAll();
+}
 
 try {
-    // Validate mode parameter
-    function validateMode($mode)
-    {
-        return in_array($mode, ['lmt', 'bmt']);
-    }
-
+    // Handle direct content ID request (for next content and preview)
     if (isset($_GET['id'])) {
         $id = (int)$_GET['id'];
-        $stmt = $pdo->prepare("SELECT * FROM content WHERE id = ? AND is_active = 1");
+
+        $stmt = $pdo->prepare("SELECT * FROM content WHERE id = ?");
         $stmt->execute([$id]);
         $content = $stmt->fetch();
 
         if ($content) {
             $slides = [];
             if ($content['content_type'] === 'slideshow') {
-                $stmt2 = $pdo->prepare("SELECT * FROM content_slides WHERE content_id = ? ORDER BY slide_order ASC");
-                $stmt2->execute([$content['id']]);
-                $slides = $stmt2->fetchAll();
+                $slides = getSlides($pdo, $content['id']);
             }
 
             echo json_encode([
@@ -39,7 +95,9 @@ try {
                 'slides' => []
             ]);
         }
-    } elseif (isset($_GET['mode'])) {
+    }
+    // Handle mode-based request (current content for TV display)
+    elseif (isset($_GET['mode'])) {
         $mode = $_GET['mode'];
 
         if (!validateMode($mode)) {
@@ -52,10 +110,21 @@ try {
             exit();
         }
 
+        // Return default content
         if (isset($_GET['default'])) {
             $stmt = $pdo->prepare("SELECT * FROM default_settings WHERE admin_role = ?");
             $stmt->execute([$mode]);
             $default = $stmt->fetch();
+
+            if (!$default) {
+                $stmt = $pdo->prepare("INSERT INTO default_settings (admin_role, default_content_type, default_content_data, default_message_type) VALUES (?, 'message', 'Welcome to ET TV Display', 'memo')");
+                $stmt->execute([$mode]);
+                $default = [
+                    'default_content_type' => 'message',
+                    'default_content_data' => 'Welcome to ET TV Display',
+                    'default_message_type' => 'memo'
+                ];
+            }
 
             echo json_encode([
                 'success' => true,
@@ -70,17 +139,17 @@ try {
                 ],
                 'slides' => []
             ]);
-        } else {
-            $stmt = $pdo->prepare("SELECT * FROM content WHERE admin_role = ? AND is_active = 1 ORDER BY created_at DESC LIMIT 1");
+        }
+        // Return current active content
+        else {
+            $stmt = $pdo->prepare("SELECT * FROM content WHERE admin_role = ? AND is_active = 1 ORDER BY COALESCE(display_order, id) ASC, created_at DESC LIMIT 1");
             $stmt->execute([$mode]);
             $content = $stmt->fetch();
 
             if ($content) {
                 $slides = [];
                 if ($content['content_type'] === 'slideshow') {
-                    $stmt2 = $pdo->prepare("SELECT * FROM content_slides WHERE content_id = ? ORDER BY slide_order ASC");
-                    $stmt2->execute([$content['id']]);
-                    $slides = $stmt2->fetchAll();
+                    $slides = getSlides($pdo, $content['id']);
                 }
 
                 echo json_encode([
@@ -89,10 +158,18 @@ try {
                     'slides' => $slides
                 ]);
             } else {
-                // Return default content
+                // Return default content if no active content
                 $stmt = $pdo->prepare("SELECT * FROM default_settings WHERE admin_role = ?");
                 $stmt->execute([$mode]);
                 $default = $stmt->fetch();
+
+                if (!$default) {
+                    $default = [
+                        'default_content_type' => 'message',
+                        'default_content_data' => 'Welcome to ET TV Display',
+                        'default_message_type' => 'memo'
+                    ];
+                }
 
                 echo json_encode([
                     'success' => true,
@@ -112,15 +189,24 @@ try {
     } else {
         echo json_encode([
             'success' => false,
-            'error' => 'Missing parameters',
+            'error' => 'Missing parameters. Please provide either "id" or "mode" parameter.',
             'content' => null,
             'slides' => []
         ]);
     }
-} catch (Exception $e) {
+} catch (PDOException $e) {
+    error_log("Database error in get_content.php: " . $e->getMessage());
     echo json_encode([
         'success' => false,
-        'error' => $e->getMessage(),
+        'error' => 'Database error occurred',
+        'content' => null,
+        'slides' => []
+    ]);
+} catch (Exception $e) {
+    error_log("General error in get_content.php: " . $e->getMessage());
+    echo json_encode([
+        'success' => false,
+        'error' => 'Server error occurred',
         'content' => null,
         'slides' => []
     ]);

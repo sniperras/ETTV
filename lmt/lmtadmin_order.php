@@ -1,5 +1,5 @@
 <?php
-require_once '../config/db.php';
+require_once __DIR__ . '/../config/db.php';
 
 // Check authentication
 if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'lmtadmin') {
@@ -22,6 +22,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_order'])) {
         if ($order_data && is_array($order_data)) {
             $pdo->beginTransaction();
 
+            // Reset all display_order to null first
+            $stmt = $pdo->prepare("UPDATE content SET display_order = NULL WHERE admin_role = 'lmt'");
+            $stmt->execute();
+
             // Update display_order for each content
             foreach ($order_data as $index => $item) {
                 $stmt = $pdo->prepare("UPDATE content SET display_order = ? WHERE id = ? AND admin_role = 'lmt'");
@@ -37,8 +41,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_order'])) {
                 $stmt->execute([$first_id]);
             }
 
+            // Update version for real-time refresh
+            $stmt = $pdo->prepare("UPDATE content_version SET version = version + 1, last_update = NOW() WHERE admin_role = 'lmt'");
+            $stmt->execute();
+
             $pdo->commit();
-            $_SESSION['flash_success'] = "Display order saved successfully!";
+            $_SESSION['flash_success'] = "Display order saved successfully! TV will update automatically.";
         }
     } catch (Exception $e) {
         $pdo->rollBack();
@@ -59,6 +67,10 @@ if (isset($_GET['delete_id'])) {
         $stmt2 = $pdo->prepare("DELETE FROM content_slides WHERE content_id = ?");
         $stmt2->execute([$delete_id]);
 
+        // Update version for real-time refresh
+        $stmt3 = $pdo->prepare("UPDATE content_version SET version = version + 1, last_update = NOW() WHERE admin_role = 'lmt'");
+        $stmt3->execute();
+
         $_SESSION['flash_success'] = "Content deleted successfully!";
     } catch (Exception $e) {
         $_SESSION['flash_error'] = "Error deleting content: " . $e->getMessage();
@@ -75,6 +87,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['edit_duration'])) {
 
         $stmt = $pdo->prepare("UPDATE content SET display_duration = ? WHERE id = ? AND admin_role = 'lmt'");
         $stmt->execute([$new_duration, $content_id]);
+
+        // Update version for real-time refresh
+        $stmt2 = $pdo->prepare("UPDATE content_version SET version = version + 1, last_update = NOW() WHERE admin_role = 'lmt'");
+        $stmt2->execute();
 
         $_SESSION['flash_success'] = "Duration updated successfully!";
     } catch (Exception $e) {
@@ -132,6 +148,8 @@ foreach ($contents as &$content) {
         $video_id = extractYouTubeID($content['content_data']);
         $content['preview_image'] = "https://img.youtube.com/vi/{$video_id}/mqdefault.jpg";
         $content['video_id'] = $video_id;
+    } elseif ($content['content_type'] === 'ppt') {
+        $content['preview_ppt'] = true;
     }
 }
 
@@ -154,6 +172,9 @@ function extractYouTubeID($url)
 $success = isset($_SESSION['flash_success']) ? $_SESSION['flash_success'] : '';
 $error = isset($_SESSION['flash_error']) ? $_SESSION['flash_error'] : '';
 unset($_SESSION['flash_success'], $_SESSION['flash_error']);
+
+// Detect base URL for AJAX calls
+$base_url = (isset($_SERVER['HTTPS']) ? 'https://' : 'http://') . $_SERVER['HTTP_HOST'] . '/ettv/';
 ?>
 
 <!DOCTYPE html>
@@ -443,6 +464,8 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
             border-radius: 8px;
             margin: 10px 20px 0 20px;
             border-left: 4px solid #28a745;
+            position: relative;
+            z-index: 100;
         }
 
         .error {
@@ -452,6 +475,8 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
             border-radius: 8px;
             margin: 10px 20px 0 20px;
             border-left: 4px solid #dc3545;
+            position: relative;
+            z-index: 100;
         }
 
         ::-webkit-scrollbar {
@@ -466,6 +491,26 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
             background: #888;
             border-radius: 4px;
         }
+
+        /* Auto-hide success/error messages */
+        .fade-out {
+            animation: fadeOut 3s ease forwards;
+        }
+
+        @keyframes fadeOut {
+            0% {
+                opacity: 1;
+            }
+
+            70% {
+                opacity: 1;
+            }
+
+            100% {
+                opacity: 0;
+                visibility: hidden;
+            }
+        }
     </style>
 </head>
 
@@ -479,11 +524,11 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
     </div>
 
     <?php if ($success): ?>
-        <div class="success"><?php echo htmlspecialchars($success); ?></div>
+        <div class="success" id="successMsg"><?php echo htmlspecialchars($success); ?></div>
     <?php endif; ?>
 
     <?php if ($error): ?>
-        <div class="error"><?php echo htmlspecialchars($error); ?></div>
+        <div class="error" id="errorMsg"><?php echo htmlspecialchars($error); ?></div>
     <?php endif; ?>
 
     <div class="container">
@@ -582,7 +627,20 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
     </div>
 
     <script>
+        const baseUrl = '<?php echo $base_url; ?>';
         let draggedItem = null;
+
+        // Auto-hide success/error messages after 3 seconds
+        setTimeout(function() {
+            const successMsg = document.getElementById('successMsg');
+            const errorMsg = document.getElementById('errorMsg');
+            if (successMsg) successMsg.classList.add('fade-out');
+            if (errorMsg) errorMsg.classList.add('fade-out');
+            setTimeout(function() {
+                if (successMsg) successMsg.style.display = 'none';
+                if (errorMsg) errorMsg.style.display = 'none';
+            }, 3000);
+        }, 2000);
 
         function initDragAndDrop() {
             const items = document.querySelectorAll('.order-item');
@@ -657,14 +715,11 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
             const previewDiv = document.getElementById('previewContent');
             previewDiv.innerHTML = '<div class="preview-placeholder"><div class="preview-placeholder-icon">⏳</div><div>Loading preview...</div></div>';
 
-            // Use absolute path for AJAX request
-            fetch(`/ettv/get_content.php?id=${contentId}&t=${Date.now()}`)
-                .then(response => {
-                    if (!response.ok) {
-                        throw new Error('HTTP error ' + response.status);
-                    }
-                    return response.json();
-                })
+            // Use local preview endpoint
+            const url = 'get_preview.php?id=' + contentId + '&t=' + Date.now();
+
+            fetch(url)
+                .then(response => response.json())
                 .then(data => {
                     if (data.success && data.content) {
                         displayPreview(data.content, data.slides || []);
@@ -674,19 +729,20 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
                 })
                 .catch(error => {
                     console.error('Preview error:', error);
-                    showPreviewError('Failed to load preview: ' + error.message);
+                    showPreviewError('Failed to load preview');
                 });
         }
 
         function displayPreview(content, slides) {
             const previewDiv = document.getElementById('previewContent');
+            const baseImageUrl = window.location.origin + '/ettv/';
 
             switch (content.content_type) {
                 case 'slideshow':
                     if (slides && slides.length > 0) {
                         let imagePath = slides[0].image_path;
-                        if (!imagePath.startsWith('/') && !imagePath.startsWith('http')) {
-                            imagePath = '/ettv/' + imagePath;
+                        if (!imagePath.startsWith('http')) {
+                            imagePath = baseImageUrl + imagePath;
                         }
                         previewDiv.innerHTML = `
                             <div style="text-align: center; width: 100%; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; background: #000;">
@@ -734,6 +790,17 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
                     `;
                     break;
 
+                case 'ppt':
+                    previewDiv.innerHTML = `
+                        <div style="text-align: center; width: 100%; height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; background: #000;">
+                            <div style="font-size: 64px; margin-bottom: 20px;">📄</div>
+                            <div style="color: white; font-size: 18px; font-weight: bold;">PDF Document</div>
+                            <div style="color: #aaa; margin-top: 10px;">Duration: ${formatDurationPreview(content.display_duration)}</div>
+                            <div style="color: #666; margin-top: 10px; font-size: 12px;">Click "Create New Content" to upload PDF</div>
+                        </div>
+                    `;
+                    break;
+
                 default:
                     previewDiv.innerHTML = `<div class="preview-placeholder">Preview not available for this content type</div>`;
             }
@@ -775,29 +842,31 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
         }
 
         function saveOrder() {
-            const items = document.querySelectorAll('.order-item');
-            const orderData = [];
-            items.forEach((item, index) => {
-                orderData.push({
-                    id: parseInt(item.getAttribute('data-id'))
+            if (confirm('Save this display order? The TV will update automatically.')) {
+                const items = document.querySelectorAll('.order-item');
+                const orderData = [];
+                items.forEach((item, index) => {
+                    orderData.push({
+                        id: parseInt(item.getAttribute('data-id'))
+                    });
                 });
-            });
 
-            const form = document.createElement('form');
-            form.method = 'POST';
-            form.action = '';
-            const input = document.createElement('input');
-            input.type = 'hidden';
-            input.name = 'order_data';
-            input.value = JSON.stringify(orderData);
-            form.appendChild(input);
-            const saveInput = document.createElement('input');
-            saveInput.type = 'hidden';
-            saveInput.name = 'save_order';
-            saveInput.value = '1';
-            form.appendChild(saveInput);
-            document.body.appendChild(form);
-            form.submit();
+                const form = document.createElement('form');
+                form.method = 'POST';
+                form.action = '';
+                const input = document.createElement('input');
+                input.type = 'hidden';
+                input.name = 'order_data';
+                input.value = JSON.stringify(orderData);
+                form.appendChild(input);
+                const saveInput = document.createElement('input');
+                saveInput.type = 'hidden';
+                saveInput.name = 'save_order';
+                saveInput.value = '1';
+                form.appendChild(saveInput);
+                document.body.appendChild(form);
+                form.submit();
+            }
         }
 
         function editDuration(id, currentDuration) {
@@ -821,7 +890,7 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
         }
 
         function deleteContent(id) {
-            if (confirm('Are you sure you want to delete this content? This action cannot be undone.')) {
+            if (confirm('⚠️ Are you sure you want to delete this content?\n\nThis action CANNOT be undone!')) {
                 window.location.href = `?delete_id=${id}`;
             }
         }

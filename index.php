@@ -12,8 +12,8 @@ if (!in_array($current_mode, ['lmt', 'bmt'])) {
     $current_mode = 'lmt';
 }
 
-// Get current active content
-$stmt = $pdo->prepare("SELECT * FROM content WHERE admin_role = ? AND is_active = 1 ORDER BY id DESC LIMIT 1");
+// Get current active content - use display_order for ordering
+$stmt = $pdo->prepare("SELECT * FROM content WHERE admin_role = ? AND is_active = 1 ORDER BY COALESCE(display_order, 999999) ASC, created_at DESC LIMIT 1");
 $stmt->execute([$current_mode]);
 $current_content = $stmt->fetch();
 
