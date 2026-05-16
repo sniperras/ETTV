@@ -22,14 +22,22 @@ $slides = [];
 if ($current_content && $current_content['content_type'] === 'slideshow') {
     // Check if it's a multi-image layout stored as JSON
     $data = json_decode($current_content['content_data'], true);
-    if ($data && isset($data['type'])) {
+    if ($data && isset($data['type']) && $data['type'] !== 'slideshow') {
         // This is a multi-image layout
         $current_content['layout_data'] = $data;
     } else {
-        // Traditional slideshow
+        // Traditional slideshow - get from content_slides table
         $stmt = $pdo->prepare("SELECT * FROM content_slides WHERE content_id = ? ORDER BY slide_order ASC");
         $stmt->execute([$current_content['id']]);
         $slides = $stmt->fetchAll();
+
+        // If slides are empty, try to parse as JSON from content_data
+        if (empty($slides) && $current_content['content_data']) {
+            $data = json_decode($current_content['content_data'], true);
+            if ($data && isset($data['type']) && $data['type'] === 'slideshow' && isset($data['images'])) {
+                $slides = $data['images'];
+            }
+        }
     }
 }
 
@@ -165,42 +173,6 @@ if ($version) $current_version = $version['version'];
 
         .slide-image.active {
             opacity: 1;
-        }
-
-        /* Multi-Image Layouts - Equal division without cropping */
-        .multi-layout {
-            width: 100%;
-            height: 100%;
-            display: flex;
-            background: #000;
-        }
-
-        /* Horizontal layouts (2 and 3 images) */
-        .layout-horizontal {
-            flex-direction: row;
-        }
-
-        /* Grid layout (4 images) */
-        .layout-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            grid-template-rows: 1fr 1fr;
-        }
-
-        /* Individual image containers */
-        .image-container {
-            flex: 1;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            background: #000;
-            padding: 10px;
-        }
-
-        .layout-image {
-            width: 100%;
-            height: 100%;
-            object-fit: contain;
         }
 
         /* Video Container */
@@ -390,6 +362,7 @@ if ($version) $current_version = $version['version'];
             clearAllTimeouts();
 
             console.log('Loading content type:', currentContent.content_type);
+            console.log('Slides count:', currentSlides ? currentSlides.length : 0);
 
             if (!currentContent || !currentContent.content_type) {
                 console.error('Invalid content structure');
@@ -400,20 +373,25 @@ if ($version) $current_version = $version['version'];
             switch (currentContent.content_type) {
                 case 'slideshow':
                     // Check if it's a multi-image layout
-                    if (currentContent.layout_data && currentContent.layout_data.type) {
+                    if (currentContent.layout_data && currentContent.layout_data.type && currentContent.layout_data.type !== 'slideshow') {
                         loadMultiImageLayout(currentContent.layout_data);
                     } else if (currentSlides && currentSlides.length > 0) {
                         loadSlideshow();
                     } else {
-                        // Try to parse content_data
+                        // Try to parse content_data for traditional slideshow
                         try {
-                            const layoutData = JSON.parse(currentContent.content_data);
-                            if (layoutData.type && layoutData.images) {
-                                loadMultiImageLayout(layoutData);
+                            const parsed = JSON.parse(currentContent.content_data);
+                            if (parsed.images && parsed.images.length > 0) {
+                                // Convert to slides format
+                                currentSlides = parsed.images.map((img, idx) => ({
+                                    image_path: img.path,
+                                    duration: img.duration || 10
+                                }));
+                                loadSlideshow();
                                 return;
                             }
                         } catch (e) {
-                            // Not JSON
+                            console.log('Not JSON or invalid format');
                         }
                         loadMessage();
                     }
@@ -436,11 +414,13 @@ if ($version) $current_version = $version['version'];
             const wrapper = document.getElementById('contentWrapper');
 
             if (!currentSlides || currentSlides.length === 0) {
+                console.log('No slides found');
                 loadMessage();
                 return;
             }
 
             console.log('Loading slideshow with', currentSlides.length, 'slides');
+            console.log('Slides data:', currentSlides);
 
             let html = '<div class="slideshow-container">';
             currentSlides.forEach((slide, index) => {
@@ -453,7 +433,7 @@ if ($version) $current_version = $version['version'];
                                class="slide-image" 
                                data-index="${index}" 
                                style="opacity: ${index === 0 ? 1 : 0};"
-                               onerror="this.src='/uploads/placeholder.png'">`;
+                               onerror="this.style.display='none'">`;
             });
             html += '</div>';
             wrapper.innerHTML = html;
@@ -473,14 +453,14 @@ if ($version) $current_version = $version['version'];
                 currentIndex = (currentIndex + 1) % slides.length;
                 slides[currentIndex].style.opacity = '1';
 
-                const duration = currentSlides[currentIndex]?.duration || 10;
-                const timeoutId = setTimeout(showNextSlide, duration * 1000);
+                const duration = (currentSlides[currentIndex]?.duration || 10) * 1000;
+                const timeoutId = setTimeout(showNextSlide, duration);
                 currentTimeouts.push(timeoutId);
             }
 
             if (slides.length > 1) {
-                const firstDuration = currentSlides[0]?.duration || 10;
-                const timeoutId = setTimeout(showNextSlide, firstDuration * 1000);
+                const firstDuration = (currentSlides[0]?.duration || 10) * 1000;
+                const timeoutId = setTimeout(showNextSlide, firstDuration);
                 currentTimeouts.push(timeoutId);
             }
 
@@ -496,59 +476,59 @@ if ($version) $current_version = $version['version'];
         function loadMultiImageLayout(layoutData) {
             const wrapper = document.getElementById('contentWrapper');
             const layoutType = layoutData.type;
-            const images = layoutData.images;
+            const images = layoutData.images || [];
 
-            let containerClass = 'multi-layout';
-            let layoutClass = '';
-
-            switch (layoutType) {
-                case '2-image':
-                    containerClass += ' layout-horizontal';
-                    layoutClass = 'two-images';
-                    break;
-                case '3-image':
-                    containerClass += ' layout-horizontal';
-                    layoutClass = 'three-images';
-                    break;
-                case '4-image':
-                    containerClass = 'multi-layout layout-grid';
-                    layoutClass = 'four-images';
-                    break;
-                default:
-                    containerClass += ' layout-horizontal';
+            if (images.length === 0) {
+                loadMessage();
+                return;
             }
 
-            let html = `<div class="${containerClass}" style="width: 100%; height: 100%;">`;
+            console.log('Loading multi-image layout:', layoutType, 'with', images.length, 'images');
+
+            let html = '';
 
             if (layoutType === '4-image') {
-                // Grid layout
-                html += `<div style="display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; width: 100%; height: 100%; gap: 10px; padding: 10px;">`;
+                // 2x2 Grid layout
+                html = `<div style="display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; width: 100%; height: 100%; gap: 10px; padding: 10px; background: #000;">`;
                 images.forEach(image => {
                     let imagePath = image.path;
                     if (!imagePath.startsWith('/') && !imagePath.startsWith('http')) {
                         imagePath = '/' + imagePath;
                     }
-                    html += `<div style="display: flex; align-items: center; justify-content: center; background: #000;">
-                                <img src="${imagePath}" style="width: 100%; height: 100%; object-fit: contain;" onerror="this.src='/uploads/placeholder.png'">
+                    html += `<div style="display: flex; align-items: center; justify-content: center; width: 100%; height: 100%;">
+                                <img src="${imagePath}" style="width: 100%; height: 100%; object-fit: contain;" onerror="this.style.display='none'">
+                            </div>`;
+                });
+                html += `</div>`;
+            } else if (layoutType === '2-image' || layoutType === '3-image') {
+                // Horizontal layout
+                const gridTemplate = layoutType === '2-image' ? '1fr 1fr' : '1fr 1fr 1fr';
+                html = `<div style="display: grid; grid-template-columns: ${gridTemplate}; width: 100%; height: 100%; gap: 10px; padding: 10px; background: #000;">`;
+                images.forEach(image => {
+                    let imagePath = image.path;
+                    if (!imagePath.startsWith('/') && !imagePath.startsWith('http')) {
+                        imagePath = '/' + imagePath;
+                    }
+                    html += `<div style="display: flex; align-items: center; justify-content: center; width: 100%; height: 100%;">
+                                <img src="${imagePath}" style="width: 100%; height: 100%; object-fit: contain;" onerror="this.style.display='none'">
                             </div>`;
                 });
                 html += `</div>`;
             } else {
-                // Horizontal layouts (2 or 3 images)
-                html += `<div style="display: flex; width: 100%; height: 100%; gap: 10px; padding: 10px;">`;
+                // Default fallback
+                html = `<div style="display: flex; width: 100%; height: 100%; gap: 10px; padding: 10px; background: #000;">`;
                 images.forEach(image => {
                     let imagePath = image.path;
                     if (!imagePath.startsWith('/') && !imagePath.startsWith('http')) {
                         imagePath = '/' + imagePath;
                     }
-                    html += `<div style="flex: 1; display: flex; align-items: center; justify-content: center; background: #000;">
-                                <img src="${imagePath}" style="width: 100%; height: 100%; object-fit: contain;" onerror="this.src='/uploads/placeholder.png'">
+                    html += `<div style="flex: 1; display: flex; align-items: center; justify-content: center;">
+                                <img src="${imagePath}" style="width: 100%; height: 100%; object-fit: contain;" onerror="this.style.display='none'">
                             </div>`;
                 });
                 html += `</div>`;
             }
 
-            html += `</div>`;
             wrapper.innerHTML = html;
 
             // Schedule expiry
@@ -565,11 +545,12 @@ if ($version) $current_version = $version['version'];
             let videoUrl = currentContent.content_data;
 
             const videoId = extractYouTubeId(videoUrl);
-            const embedUrl = `https://www.youtube.com/embed/${videoId}?autoplay=1&loop=1&playlist=${videoId}&controls=0&showinfo=0&rel=0&modestbranding=1&iv_load_policy=3`;
+            // Add autoplay and force reload parameters
+            const embedUrl = `https://www.youtube.com/embed/${videoId}?autoplay=1&loop=1&playlist=${videoId}&controls=0&showinfo=0&rel=0&modestbranding=1&iv_load_policy=3&enablejsapi=1`;
 
             wrapper.innerHTML = `
                 <div class="video-container">
-                    <iframe src="${embedUrl}" 
+                    <iframe id="youtubeFrame" src="${embedUrl}" 
                             frameborder="0" 
                             allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
                             allowfullscreen>
@@ -577,14 +558,24 @@ if ($version) $current_version = $version['version'];
                 </div>
             `;
 
+            // Force reload to ensure autoplay works
+            const iframe = document.getElementById('youtubeFrame');
+            if (iframe) {
+                iframe.src = embedUrl;
+            }
+
             let playCount = 0;
             const totalDuration = currentContent.display_duration * currentContent.loop_count;
 
             const timeoutId = setTimeout(() => {
                 playCount++;
                 if (playCount < currentContent.loop_count) {
-                    const iframe = wrapper.querySelector('iframe');
-                    iframe.src = embedUrl;
+                    const iframeReload = document.getElementById('youtubeFrame');
+                    if (iframeReload) {
+                        iframeReload.src = embedUrl;
+                    }
+                    const newTimeoutId = setTimeout(arguments.callee, totalDuration * 1000);
+                    currentTimeouts.push(newTimeoutId);
                 } else {
                     loadNextContent();
                 }
@@ -655,14 +646,22 @@ if ($version) $current_version = $version['version'];
         }
 
         function loadNextContent() {
-            if (currentContent.next_content_id && currentContent.next_content_id !== null) {
-                fetch(`get_content.php?id=${currentContent.next_content_id}&t=${Date.now()}`)
+            console.log('Loading next content, next_content_id:', currentContent.next_content_id);
+
+            if (currentContent.next_content_id && currentContent.next_content_id !== null && currentContent.next_content_id !== '') {
+                const nextId = parseInt(currentContent.next_content_id);
+                fetch(`get_content.php?id=${nextId}&t=${Date.now()}`)
                     .then(response => response.json())
                     .then(data => {
                         if (data.success && data.content) {
                             currentContent = data.content;
                             currentSlides = data.slides || [];
-                            loadContent();
+                            // If it's YouTube, force a small delay to ensure autoplay works
+                            if (data.content.content_type === 'youtube') {
+                                setTimeout(() => loadContent(), 100);
+                            } else {
+                                loadContent();
+                            }
                         } else {
                             loadDefaultContent();
                         }
@@ -723,7 +722,12 @@ if ($version) $current_version = $version['version'];
                                     if (data.success && data.content) {
                                         currentContent = data.content;
                                         currentSlides = data.slides || [];
-                                        loadContent();
+                                        // If it's YouTube, force reload for autoplay
+                                        if (data.content.content_type === 'youtube') {
+                                            setTimeout(() => loadContent(), 100);
+                                        } else {
+                                            loadContent();
+                                        }
                                     }
                                 });
                         }
