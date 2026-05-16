@@ -144,6 +144,32 @@ function formatDuration($seconds)
     return round($seconds / 86400) . ' days';
 }
 
+// Get layout type from content_data for display
+function getLayoutType($content_type, $content_data)
+{
+    if ($content_type !== 'slideshow') return null;
+
+    $data = json_decode($content_data, true);
+    if ($data && isset($data['type'])) {
+        return $data['type'];
+    }
+    return 'slideshow';
+}
+
+function getLayoutIcon($layout_type)
+{
+    switch ($layout_type) {
+        case '2-image':
+            return '📸 2 Images';
+        case '3-image':
+            return '📸 3 Images';
+        case '4-image':
+            return '🎚️ 4 Grid';
+        default:
+            return '🎞️ Slideshow';
+    }
+}
+
 // Get all content for LMT ordered by display_order
 $stmt = $pdo->prepare("SELECT * FROM content WHERE admin_role = 'lmt' ORDER BY COALESCE(display_order, 999999) ASC, id ASC");
 $stmt->execute();
@@ -340,11 +366,20 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
         .item-title {
             font-weight: bold;
             margin-bottom: 5px;
+            font-size: 14px;
+        }
+
+        .item-description {
+            font-size: 11px;
+            color: #666;
+            margin-top: 3px;
+            font-style: italic;
         }
 
         .item-details {
-            font-size: 12px;
-            color: #666;
+            font-size: 11px;
+            color: #888;
+            margin-top: 3px;
         }
 
         .item-actions {
@@ -476,6 +511,16 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
                 visibility: hidden;
             }
         }
+
+        .badge {
+            display: inline-block;
+            padding: 2px 6px;
+            font-size: 10px;
+            border-radius: 4px;
+            background: #e9ecef;
+            color: #495057;
+            margin-left: 8px;
+        }
     </style>
 </head>
 
@@ -505,7 +550,10 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
                 <?php if (empty($contents)): ?>
                     <div style="text-align: center; padding: 40px;">No content found. <a href="lmtadmin.php">Create your first display content</a></div>
                 <?php else: ?>
-                    <?php foreach ($contents as $index => $content): ?>
+                    <?php foreach ($contents as $index => $content):
+                        $layout_type = getLayoutType($content['content_type'], $content['content_data']);
+                        $layout_icon = getLayoutIcon($layout_type);
+                    ?>
                         <div class="order-item <?php echo $content['is_active'] ? '' : 'inactive'; ?>" data-id="<?php echo $content['id']; ?>">
                             <div class="order-item-content">
                                 <div class="drag-handle">☰</div>
@@ -520,13 +568,25 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
                                 <div class="item-info">
                                     <div class="item-title">
                                         #<?php echo $index + 1; ?> - <?php echo ucfirst($content['content_type']); ?>
+                                        <?php if ($content['content_type'] === 'slideshow' && $layout_type !== 'slideshow'): ?>
+                                            <span class="badge"><?php echo $layout_icon; ?></span>
+                                        <?php endif; ?>
                                     </div>
+                                    <?php if (!empty($content['description']) && ($content['content_type'] === 'slideshow' || $content['content_type'] === 'ppt')): ?>
+                                        <div class="item-description">
+                                            📝 <?php echo htmlspecialchars(substr($content['description'], 0, 80)); ?>
+                                            <?php if (strlen($content['description']) > 80): ?>...<?php endif; ?>
+                                        </div>
+                                    <?php endif; ?>
                                     <div class="item-details">
-                                        Duration: <?php echo formatDuration($content['display_duration']); ?>
+                                        ⏱️ Duration: <?php echo formatDuration($content['display_duration']); ?>
+                                        <?php if ($content['content_type'] === 'slideshow' && $layout_type === 'slideshow'): ?>
+                                            | 🎞️ Slideshow mode
+                                        <?php endif; ?>
                                         <?php if ($content['is_active']): ?>
-                                            <span style="color: #28a745;">✅ Active</span>
+                                            <span style="color: #28a745; margin-left: 8px;">✅ Active</span>
                                         <?php else: ?>
-                                            <span style="color: #dc3545;">⛔ Inactive</span>
+                                            <span style="color: #dc3545; margin-left: 8px;">⛔ Inactive</span>
                                         <?php endif; ?>
                                     </div>
                                 </div>
