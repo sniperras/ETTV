@@ -1,7 +1,9 @@
 <?php
-// get_content.php - Fixed with validation
-require_once 'config/db.php';
+// get_content.php
 header('Content-Type: application/json');
+header('Cache-Control: no-cache, must-revalidate');
+
+require_once 'config/db.php';
 
 try {
     // Validate mode parameter
@@ -30,13 +32,23 @@ try {
                 'slides' => $slides
             ]);
         } else {
-            echo json_encode(['success' => false, 'error' => 'Content not found']);
+            echo json_encode([
+                'success' => false,
+                'error' => 'Content not found',
+                'content' => null,
+                'slides' => []
+            ]);
         }
     } elseif (isset($_GET['mode'])) {
         $mode = $_GET['mode'];
 
         if (!validateMode($mode)) {
-            echo json_encode(['success' => false, 'error' => 'Invalid mode']);
+            echo json_encode([
+                'success' => false,
+                'error' => 'Invalid mode',
+                'content' => null,
+                'slides' => []
+            ]);
             exit();
         }
 
@@ -98,8 +110,18 @@ try {
             }
         }
     } else {
-        echo json_encode(['success' => false, 'error' => 'Missing parameters']);
+        echo json_encode([
+            'success' => false,
+            'error' => 'Missing parameters',
+            'content' => null,
+            'slides' => []
+        ]);
     }
 } catch (Exception $e) {
-    echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+    echo json_encode([
+        'success' => false,
+        'error' => $e->getMessage(),
+        'content' => null,
+        'slides' => []
+    ]);
 }
