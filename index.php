@@ -99,6 +99,7 @@ if (!$current_content) {
         'content_type' => 'message',
         'content_data' => 'Welcome to LMT TV Display',
         'message_type' => 'memo',
+        'description' => '',
         'display_duration' => 300,
         'loop_count' => 1,
         'next_content_id' => null
@@ -189,11 +190,45 @@ if ($version) $current_version = $version['version'];
             width: 100vw;
             height: 100vh;
             display: flex;
+            flex-direction: column;
             align-items: center;
             justify-content: center;
             overflow: hidden;
             position: relative;
             background: #000;
+        }
+
+        /* Description Bar - Persistent */
+        .description-bar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            background: rgba(0, 0, 0, 0.85);
+            backdrop-filter: blur(10px);
+            color: white;
+            text-align: center;
+            padding: 12px 20px;
+            font-size: 18px;
+            font-weight: 500;
+            z-index: 1001;
+            border-bottom: 2px solid rgba(102, 126, 234, 0.5);
+            opacity: 0;
+            visibility: hidden;
+            transition: opacity 0.3s ease, visibility 0.3s ease;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .description-bar.visible {
+            opacity: 1;
+            visibility: visible;
+        }
+
+        /* Add padding to content wrapper when description is visible */
+        .description-bar.visible+.display-container .content-wrapper {
+            padding-top: 60px;
         }
 
         .content-wrapper {
@@ -203,6 +238,7 @@ if ($version) $current_version = $version['version'];
             align-items: center;
             justify-content: center;
             overflow: hidden;
+            transition: padding-top 0.3s ease;
         }
 
         .slideshow-container {
@@ -408,6 +444,11 @@ if ($version) $current_version = $version['version'];
                 gap: 8px;
                 padding: 10px;
             }
+
+            .description-bar {
+                font-size: 14px;
+                padding: 8px 15px;
+            }
         }
     </style>
     <!-- PDF.js library for PDF processing -->
@@ -425,6 +466,9 @@ if ($version) $current_version = $version['version'];
             <button class="mode-option" onclick="switchMode('bmt')">BMT Display</button>
         </div>
     </div>
+
+    <!-- Description Bar - Persistent (stays visible) -->
+    <div id="descriptionBar" class="description-bar"></div>
 
     <div class="display-container">
         <div class="content-wrapper" id="contentWrapper"></div>
@@ -462,12 +506,30 @@ if ($version) $current_version = $version['version'];
             }
         }
 
+        function showDescription(description) {
+            const descBar = document.getElementById('descriptionBar');
+            if (description && description.trim() !== '') {
+                descBar.innerHTML = description;
+                descBar.classList.add('visible');
+            } else {
+                descBar.classList.remove('visible');
+                descBar.innerHTML = '';
+            }
+        }
+
         function updateCurrentContent(data) {
             currentContent = data.content;
             currentSlides = data.slides || [];
             currentLayoutData = null;
             pdfDoc = null;
             currentPageSet = 0;
+
+            // Show description for slideshow and PDF content - PERSISTENT (no auto-hide)
+            if ((currentContent.content_type === 'slideshow' || currentContent.content_type === 'ppt') && currentContent.description) {
+                showDescription(currentContent.description);
+            } else {
+                showDescription('');
+            }
 
             if (currentContent.content_type === 'slideshow' && currentContent.content_data) {
                 try {
@@ -948,6 +1010,11 @@ if ($version) $current_version = $version['version'];
 
         // Initialize
         document.addEventListener('DOMContentLoaded', function() {
+            // Show initial description if present (persistent - no auto-hide)
+            if ((currentContent.content_type === 'slideshow' || currentContent.content_type === 'ppt') && currentContent.description) {
+                showDescription(currentContent.description);
+            }
+
             loadContent();
             startPolling();
 
