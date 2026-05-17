@@ -1,25 +1,21 @@
 <?php
-// lmt/get_preview.php - Preview endpoint for order manager
+// get_preview.php - Fixed for InfinityFree
 header('Content-Type: application/json');
 
-// Find config
-$paths = [
-    '../config/db.php',
-    __DIR__ . '/../config/db.php',
-    $_SERVER['DOCUMENT_ROOT'] . '/ettv/config/db.php'
-];
-
-$found = false;
-foreach ($paths as $path) {
-    if (file_exists($path)) {
-        require_once $path;
-        $found = true;
-        break;
-    }
+// Simple path detection for InfinityFree
+$config_path = __DIR__ . '/config/db.php';
+if (!file_exists($config_path)) {
+    $config_path = __DIR__ . '/../config/db.php';
+}
+if (!file_exists($config_path)) {
+    echo json_encode(['success' => false, 'error' => 'Config not found']);
+    exit();
 }
 
-if (!$found || !isset($pdo)) {
-    echo json_encode(['success' => false, 'error' => 'Config not found']);
+require_once $config_path;
+
+if (!isset($pdo)) {
+    echo json_encode(['success' => false, 'error' => 'Database connection failed']);
     exit();
 }
 
@@ -30,7 +26,7 @@ if (!$id) {
     exit();
 }
 
-$stmt = $pdo->prepare("SELECT * FROM content WHERE id = ?");
+$stmt = $pdo->prepare("SELECT * FROM content WHERE id = ? AND admin_role = 'lmt'");
 $stmt->execute([$id]);
 $content = $stmt->fetch();
 
@@ -46,27 +42,17 @@ if ($content['content_type'] === 'slideshow') {
     $slides = $stmt2->fetchAll();
 }
 
-// Fix image paths to be absolute
+// Fix image paths - keep them relative, frontend will add domain
 foreach ($slides as &$slide) {
-    if (!preg_match('/^https?:\/\//', $slide['image_path'])) {
-        $slide['image_path'] = '/ettv/' . ltrim($slide['image_path'], '/');
+    if (!empty($slide['image_path'])) {
+        // Remove any existing domain or leading slashes for consistency
+        $slide['image_path'] = ltrim($slide['image_path'], '/');
     }
 }
 
-// Fix PDF path for ppt type
-if ($content['content_type'] === 'ppt' && !empty($content['content_data'])) {
-    // Parse JSON if it's stored as JSON
-    $pdfData = json_decode($content['content_data'], true);
-    if ($pdfData && isset($pdfData['file_path'])) {
-        $pdfPath = $pdfData['file_path'];
-    } else {
-        $pdfPath = $content['content_data'];
-    }
-
-    if (!preg_match('/^https?:\/\//', $pdfPath)) {
-        $pdfPath = '/ettv/' . ltrim($pdfPath, '/');
-    }
-    $content['content_data'] = $pdfPath;
+// For PDF, return the ID so we can use proxy
+if ($content['content_type'] === 'ppt') {
+    $content['pdf_proxy_url'] = 'pdf_proxy.php?id=' . $content['id'];
 }
 
 echo json_encode([

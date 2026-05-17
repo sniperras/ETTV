@@ -1,5 +1,5 @@
 <?php
-require_once __DIR__ . '/../config/db.php';
+require_once '../config/db.php';
 
 // Check authentication
 if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'lmtadmin') {
@@ -13,7 +13,7 @@ try {
 } catch (PDOException $e) {
 }
 
-// Handle save order (ONLY saves order, does NOT activate all)
+// Handle save order
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_order'])) {
     try {
         $order_data = json_decode($_POST['order_data'], true);
@@ -27,11 +27,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_order'])) {
                 $stmt->execute([$index, $item['id']]);
             }
 
-            // Build the chain: set next_content_id based on order (only for ACTIVE content)
+            // Build the chain for active content only
             $stmt = $pdo->prepare("UPDATE content SET next_content_id = NULL WHERE admin_role = 'lmt'");
             $stmt->execute();
 
-            // Build chain only for active content in order
             $active_items = [];
             foreach ($order_data as $item) {
                 $stmt = $pdo->prepare("SELECT is_active FROM content WHERE id = ?");
@@ -276,6 +275,7 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
             cursor: pointer;
             text-decoration: none;
             display: inline-block;
+            transition: opacity 0.2s;
         }
 
         .btn:hover {
@@ -542,11 +542,11 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
             font-size: 14px;
             font-weight: bold;
             cursor: pointer;
-            transition: all 0.2s;
+            transition: opacity 0.2s;
         }
 
         .modal-btn:hover {
-            transform: scale(1.02);
+            opacity: 0.9;
         }
 
         .modal-btn-cancel {
@@ -637,12 +637,80 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
             color: #495057;
             margin-left: 8px;
         }
+
+        .pdf-preview-container {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            background: #1a1a2e;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .pdf-toolbar {
+            padding: 12px;
+            background: #16213e;
+            color: white;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 13px;
+            flex-shrink: 0;
+        }
+
+        .pdf-nav-buttons {
+            display: flex;
+            gap: 10px;
+        }
+
+        .pdf-nav-btn {
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            padding: 4px 12px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+
+        .pdf-nav-btn:hover {
+            opacity: 0.9;
+        }
+
+        .pdf-nav-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .pdf-canvas-container {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            padding: 10px;
+        }
+
+        .pdf-canvas {
+            max-width: 100%;
+            max-height: 100%;
+            border-radius: 8px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+        }
+
+        .pdf-loading {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: #1a1a2e;
+            color: white;
+            gap: 12px;
+            z-index: 10;
+        }
     </style>
-    <!-- PDF.js library for PDF preview -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-    <script>
-        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-    </script>
 </head>
 
 <body>
@@ -782,10 +850,10 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
 
     <script>
         let draggedItem = null;
-        let pendingAction = null;
-        let pendingId = null;
         let pdfDoc = null;
         let currentPdfPage = 1;
+        let pdfRenderToken = 0;
+        let currentPreviewInterval = null;
 
         // Auto-hide notifications
         setTimeout(function() {
@@ -832,14 +900,14 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
         }
 
         function showToggleModal(id, activate) {
-            const message = activate ? 'Are you sure you want to ACTIVATE this content?' : 'Are you sure you want to DEACTIVATE this content?';
+            const message = activate ? 'Are you sure you want to ACTIVATE this content? It will appear in the TV display sequence.' : 'Are you sure you want to DEACTIVATE this content? It will be hidden from the TV display.';
             showConfirmModal(activate ? '🟢 Activate Content' : '🔴 Deactivate Content', message, activate ? '✅' : '⚠️', () => {
                 window.location.href = `?toggle_active=${id}`;
             });
         }
 
         function showDeleteModal(id) {
-            showConfirmModal('🗑️ Delete Content', '⚠️ This action CANNOT be undone!', '⚠️', () => {
+            showConfirmModal('🗑️ Delete Content', '⚠️ This action CANNOT be undone! The content and all its slides/images will be permanently removed.', '⚠️', () => {
                 window.location.href = `?delete_id=${id}`;
             });
         }
@@ -886,8 +954,9 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
 
         function loadPreview(contentId) {
             const previewDiv = document.getElementById('previewContent');
-            if (previewDiv._slideInterval) clearInterval(previewDiv._slideInterval);
+            if (currentPreviewInterval) clearInterval(currentPreviewInterval);
             previewDiv.innerHTML = '<div class="preview-placeholder"><div class="preview-placeholder-icon">⏳</div><div>Loading preview...</div></div>';
+
             fetch('get_preview.php?id=' + contentId + '&t=' + Date.now())
                 .then(r => r.json())
                 .then(data => {
@@ -899,7 +968,7 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
 
         function displayPreview(content, slides) {
             const previewDiv = document.getElementById('previewContent');
-            if (previewDiv._slideInterval) clearInterval(previewDiv._slideInterval);
+            if (currentPreviewInterval) clearInterval(currentPreviewInterval);
 
             if (content.content_type === 'slideshow' && slides && slides.length > 0) {
                 let imagePath = slides[0].image_path;
@@ -931,27 +1000,39 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
                         </div>
                     </div>`;
             } else if (content.content_type === 'ppt') {
-                const pdfUrl = content.content_data;
+                const pdfUrl = encodeURIComponent(content.content_data);
                 previewDiv.innerHTML = `
-                    <div style="width:100%;height:100%;background:#1a1a2e;display:flex;flex-direction:column;">
-                        <div style="padding:12px;background:#16213e;color:white;text-align:center;font-size:13px;display:flex;justify-content:space-between;align-items:center;">
-                            <span>📄 PDF Preview</span>
-                            <div style="display:flex;gap:10px;">
-                                <button onclick="pdfPrevPage()" id="pdfPrevBtn" style="background:#667eea;color:white;border:none;border-radius:5px;padding:4px 10px;cursor:pointer;">◀ Prev</button>
+                    <div class="pdf-preview-container">
+                        <div class="pdf-toolbar">
+                            <span>📄 PDF Document</span>
+                            <div class="pdf-nav-buttons">
+                                <button class="pdf-nav-btn" id="pdfPrevBtn" ${!pdfDoc ? 'disabled' : ''}>◀ Prev</button>
                                 <span id="pdfPageInfo">Page 1 / ?</span>
-                                <button onclick="pdfNextPage()" id="pdfNextBtn" style="background:#667eea;color:white;border:none;border-radius:5px;padding:4px 10px;cursor:pointer;">Next ▶</button>
+                                <button class="pdf-nav-btn" id="pdfNextBtn" ${!pdfDoc ? 'disabled' : ''}>Next ▶</button>
                             </div>
-                            <span style="font-size:11px;">${formatDurationPreview(content.display_duration)}</span>
+                            <span>${formatDurationPreview(content.display_duration)}</span>
                         </div>
-                        <div id="pdfCanvasContainer" style="flex:1;display:flex;align-items:center;justify-content:center;overflow:hidden;padding:10px;">
-                            <canvas id="pdfCanvas" style="max-width:100%;max-height:100%;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,0.5);"></canvas>
+                        <div class="pdf-canvas-container">
+                            <canvas id="pdfCanvas" class="pdf-canvas"></canvas>
                         </div>
-                        <div id="pdfLoading" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#1a1a2e;color:white;gap:12px;">
+                        <div id="pdfLoading" class="pdf-loading">
                             <div style="font-size:40px;">📄</div>
                             <div>Loading PDF...</div>
                         </div>
                     </div>`;
-                renderPdfPreview(pdfUrl);
+
+                // Load PDF.js only when needed
+                if (typeof pdfjsLib === 'undefined') {
+                    const script = document.createElement('script');
+                    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+                    script.onload = () => {
+                        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+                        renderPdfPreview(decodeURIComponent(pdfUrl));
+                    };
+                    document.head.appendChild(script);
+                } else {
+                    renderPdfPreview(decodeURIComponent(pdfUrl));
+                }
             } else {
                 previewDiv.innerHTML = `<div class="preview-placeholder"><div class="preview-placeholder-icon">📄</div><div>Preview not available</div></div>`;
             }
@@ -960,17 +1041,27 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
         function renderPdfPreview(pdfUrl) {
             pdfDoc = null;
             currentPdfPage = 1;
+            const token = ++pdfRenderToken;
+
             const loading = document.getElementById('pdfLoading');
             if (loading) loading.style.display = 'flex';
 
             pdfjsLib.getDocument(pdfUrl).promise.then(pdf => {
+                if (token !== pdfRenderToken) return;
                 pdfDoc = pdf;
                 const info = document.getElementById('pdfPageInfo');
                 if (info) info.textContent = `Page 1 / ${pdf.numPages}`;
+
+                const prevBtn = document.getElementById('pdfPrevBtn');
+                const nextBtn = document.getElementById('pdfNextBtn');
+                if (prevBtn) prevBtn.disabled = false;
+                if (nextBtn) nextBtn.disabled = false;
+
                 const loadingDiv = document.getElementById('pdfLoading');
                 if (loadingDiv) loadingDiv.style.display = 'none';
                 renderPdfPage(1);
             }).catch(err => {
+                if (token !== pdfRenderToken) return;
                 const loadingDiv = document.getElementById('pdfLoading');
                 if (loadingDiv) loadingDiv.innerHTML = `<div style="font-size:40px;">⚠️</div><div>Failed to load PDF</div><div style="font-size:11px;">${err.message}</div>`;
             });
@@ -981,9 +1072,9 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
             pdfDoc.getPage(pageNum).then(page => {
                 const canvas = document.getElementById('pdfCanvas');
                 if (!canvas) return;
-                const container = document.getElementById('pdfCanvasContainer');
-                const maxW = (container ? container.clientWidth : 800) - 20;
-                const maxH = (container ? container.clientHeight : 500) - 20;
+                const container = canvas.parentElement;
+                const maxW = (container ? container.clientWidth : 600) - 20;
+                const maxH = (container ? container.clientHeight : 400) - 20;
                 const viewport = page.getViewport({
                     scale: 1
                 });
@@ -997,6 +1088,7 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
                     canvasContext: canvas.getContext('2d'),
                     viewport: scaledViewport
                 });
+
                 const info = document.getElementById('pdfPageInfo');
                 if (info) info.textContent = `Page ${pageNum} / ${pdfDoc.numPages}`;
                 currentPdfPage = pageNum;
@@ -1010,9 +1102,6 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
         function pdfNextPage() {
             if (pdfDoc && currentPdfPage < pdfDoc.numPages) renderPdfPage(currentPdfPage + 1);
         }
-
-        window.pdfPrevPage = pdfPrevPage;
-        window.pdfNextPage = pdfNextPage;
 
         function formatDurationPreview(seconds) {
             if (seconds < 60) return seconds + ' seconds';
@@ -1039,7 +1128,7 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
             document.getElementById('previewContent').innerHTML = `<div class="preview-placeholder"><div class="preview-placeholder-icon">⚠️</div><div>${msg || 'Preview not available'}</div></div>`;
         }
 
-        function saveOrder() {
+        function submitOrder() {
             const items = document.querySelectorAll('.order-item');
             const orderData = Array.from(items).map(item => ({
                 id: parseInt(item.getAttribute('data-id'))
@@ -1058,6 +1147,10 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
             form.appendChild(saveInput);
             document.body.appendChild(form);
             form.submit();
+        }
+
+        function saveOrder() {
+            showConfirmModal('💾 Save Display Order', 'Save this display order? Active content will play in this sequence. The TV will update immediately.', '📋', submitOrder);
         }
 
         function editDuration(id, currentDuration) {
@@ -1079,15 +1172,15 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
             document.getElementById('editModal').classList.add('active');
         }
 
-        function closeEditModal() {
-            document.getElementById('editModal').classList.remove('active');
-        }
+        // Event delegation for PDF navigation buttons
+        document.addEventListener('click', function(e) {
+            if (e.target.id === 'pdfPrevBtn') pdfPrevPage();
+            if (e.target.id === 'pdfNextBtn') pdfNextPage();
+        });
 
         document.addEventListener('DOMContentLoaded', () => {
             initDragAndDrop();
-            document.getElementById('saveOrderBtn').addEventListener('click', () => {
-                showConfirmModal('💾 Save Display Order', 'Save this display order? The TV will update immediately.', '📋', saveOrder);
-            });
+            document.getElementById('saveOrderBtn').addEventListener('click', saveOrder);
             document.getElementById('editModal').addEventListener('click', e => {
                 if (e.target === e.currentTarget) closeEditModal();
             });
