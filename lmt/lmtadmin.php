@@ -18,8 +18,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $description = isset($_POST['description']) ? trim($_POST['description']) : '';
         $display_duration = convertToSeconds($_POST['display_duration']);
         $loop_count = isset($_POST['loop_count']) ? (int)$_POST['loop_count'] : 1;
-        $next_content_id = !empty($_POST['next_content_id']) ? (int)$_POST['next_content_id'] : null;
+        $insert_position = !empty($_POST['insert_position']) ? $_POST['insert_position'] : null;
+        $make_first = isset($_POST['make_first']) ? true : false;
         $layout_type = isset($_POST['layout_type']) ? $_POST['layout_type'] : 'slideshow';
+
+        // Flag to determine if we should force index refresh
+        $force_refresh = $make_first;
 
         // Validate content type
         $allowed_types = ['slideshow', 'youtube', 'message', 'ppt'];
@@ -29,6 +33,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         // Start transaction
         $pdo->beginTransaction();
+
+        // Get current max display_order
+        $stmt = $pdo->prepare("SELECT COALESCE(MAX(display_order), -1) as max_order FROM content WHERE admin_role = 'lmt'");
+        $stmt->execute();
+        $max_order = $stmt->fetch()['max_order'];
+
+        $new_display_order = $max_order + 1;
+
+        // If make_first is checked, shift all orders up by 1 and set this to 0
+        if ($make_first) {
+            $stmt = $pdo->prepare("UPDATE content SET display_order = display_order + 1 WHERE admin_role = 'lmt' ORDER BY display_order DESC");
+            $stmt->execute();
+            $new_display_order = 0;
+        }
+        // If insert_position is specified, shift orders after that position
+        else if ($insert_position !== null && $insert_position !== '' && $insert_position !== 'last') {
+            $insert_pos = (int)$insert_position;
+            $stmt = $pdo->prepare("UPDATE content SET display_order = display_order + 1 WHERE admin_role = 'lmt' AND display_order >= ? ORDER BY display_order DESC");
+            $stmt->execute([$insert_pos + 1]);
+            $new_display_order = $insert_pos + 1;
+        }
+        // If 'last' is selected, just append at the end
+        else if ($insert_position === 'last') {
+            $new_display_order = $max_order + 1;
+        }
 
         if ($content_type === 'slideshow') {
             // Handle slideshow with multiple images
@@ -58,8 +87,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             if ($layout_type === 'slideshow') {
                 // Traditional slideshow - store in content_slides table
-                $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, description, display_duration, loop_count, next_content_id, is_active) VALUES (?, ?, ?, ?, ?, ?, 1)");
-                $stmt->execute(['lmt', $content_type, $description, $display_duration, $loop_count, $next_content_id]);
+                $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, description, display_duration, loop_count, is_active, display_order) VALUES (?, ?, ?, ?, ?, 1, ?)");
+                $stmt->execute(['lmt', $content_type, $description, $display_duration, $loop_count, $new_display_order]);
                 $content_id = $pdo->lastInsertId();
 
                 // Insert each slide
@@ -76,8 +105,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'images' => $uploaded_images
                 ]);
 
-                $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, description, content_data, display_duration, loop_count, next_content_id, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, 1)");
-                $stmt->execute(['lmt', $content_type, $description, $content_data, $display_duration, $loop_count, $next_content_id]);
+                $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, description, content_data, display_duration, loop_count, is_active, display_order) VALUES (?, ?, ?, ?, ?, ?, 1, ?)");
+                $stmt->execute(['lmt', $content_type, $description, $content_data, $display_duration, $loop_count, $new_display_order]);
             }
         } elseif ($content_type === 'ppt') {
             // Handle PPT/PDF upload
@@ -91,16 +120,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             $content_data = json_encode(['file_path' => $file_path]);
 
-            $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, description, content_data, display_duration, loop_count, next_content_id, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, 1)");
-            $stmt->execute(['lmt', $content_type, $description, $content_data, $display_duration, $loop_count, $next_content_id]);
+            $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, description, content_data, display_duration, loop_count, is_active, display_order) VALUES (?, ?, ?, ?, ?, ?, 1, ?)");
+            $stmt->execute(['lmt', $content_type, $description, $content_data, $display_duration, $loop_count, $new_display_order]);
         } elseif ($content_type === 'youtube') {
             $youtube_link = filter_var($_POST['youtube_link'], FILTER_VALIDATE_URL);
             if (!$youtube_link) {
                 throw new Exception('Invalid YouTube URL');
             }
 
-            $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, content_data, display_duration, loop_count, next_content_id, is_active) VALUES (?, ?, ?, ?, ?, ?, 1)");
-            $stmt->execute(['lmt', $content_type, $youtube_link, $display_duration, $loop_count, $next_content_id]);
+            $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, content_data, display_duration, loop_count, is_active, display_order) VALUES (?, ?, ?, ?, ?, 1, ?)");
+            $stmt->execute(['lmt', $content_type, $youtube_link, $display_duration, $loop_count, $new_display_order]);
         } elseif ($content_type === 'message') {
             $message_text = htmlspecialchars($_POST['message_text'], ENT_QUOTES, 'UTF-8');
             $message_type = $_POST['message_type'];
@@ -110,8 +139,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $message_type = 'memo';
             }
 
-            $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, content_data, message_type, display_duration, loop_count, next_content_id, is_active) VALUES (?, ?, ?, ?, ?, ?, ?, 1)");
-            $stmt->execute(['lmt', $content_type, $message_text, $message_type, $display_duration, $loop_count, $next_content_id]);
+            $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, content_data, message_type, display_duration, loop_count, is_active, display_order) VALUES (?, ?, ?, ?, ?, ?, 1, ?)");
+            $stmt->execute(['lmt', $content_type, $message_text, $message_type, $display_duration, $loop_count, $new_display_order]);
+        }
+
+        // Rebuild the chain after insertion
+        $stmt = $pdo->prepare("SELECT id, is_active FROM content WHERE admin_role = 'lmt' ORDER BY display_order ASC, id ASC");
+        $stmt->execute();
+        $all_content = $stmt->fetchAll();
+
+        // Clear all next_content_id
+        $stmt = $pdo->prepare("UPDATE content SET next_content_id = NULL WHERE admin_role = 'lmt'");
+        $stmt->execute();
+
+        // Build chain only for active content in order
+        $active_ids = [];
+        foreach ($all_content as $item) {
+            if ($item['is_active'] == 1) {
+                $active_ids[] = $item['id'];
+            }
+        }
+
+        for ($i = 0; $i < count($active_ids) - 1; $i++) {
+            $stmt = $pdo->prepare("UPDATE content SET next_content_id = ? WHERE id = ?");
+            $stmt->execute([$active_ids[$i + 1], $active_ids[$i]]);
         }
 
         // Update version for real-time refresh
@@ -120,7 +171,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         $pdo->commit();
 
-        $_SESSION['flash_success'] = "Content published successfully! All TV displays will update in real-time.";
+        $_SESSION['flash_success'] = "Content published successfully!";
+
+        // Conditional redirect based on force_refresh flag
+        if ($force_refresh) {
+            // Refresh the index page immediately by triggering a higher version bump
+            $stmt_extra = $pdo->prepare("UPDATE content_version SET version = version + 1, last_update = NOW() WHERE admin_role = 'lmt'");
+            $stmt_extra->execute();
+            $_SESSION['flash_success'] .= " TV will refresh immediately to show new first content.";
+        } else {
+            $_SESSION['flash_success'] .= " The TV will continue normal playback with updated sequence.";
+        }
+
         header('Location: ' . $_SERVER['PHP_SELF']);
         exit();
     } catch (Exception $e) {
@@ -392,6 +454,42 @@ $all_content = $stmt->fetchAll();
             display: block;
         }
 
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px;
+            background: #f8f9fa;
+            border-radius: 10px;
+            border: 1px solid #e0e0e0;
+        }
+
+        .checkbox-group input {
+            width: auto;
+            margin: 0;
+            transform: scale(1.2);
+            cursor: pointer;
+        }
+
+        .checkbox-group label {
+            margin: 0;
+            cursor: pointer;
+        }
+
+        .checkbox-group small {
+            font-size: 11px;
+            color: #666;
+            margin-left: auto;
+        }
+
+        .insert-position-group {
+            margin-top: 10px;
+            padding: 15px;
+            background: #f0f7ff;
+            border-radius: 10px;
+            border: 1px solid #cce5ff;
+        }
+
         @media (max-width: 768px) {
             .header {
                 flex-direction: column;
@@ -447,7 +545,47 @@ $all_content = $stmt->fetchAll();
                 <div class="form-group description-field" id="descriptionField">
                     <label>📝 Description (Optional)</label>
                     <textarea name="description" id="description" placeholder="Enter a description for this content (e.g., 'Product Launch Images', 'Annual Report PDF', etc.)" maxlength="500"></textarea>
-                    <div class="description-hint">This description will help you identify this content in the order manager and next content dropdown</div>
+                    <div class="description-hint">This description will help you identify this content in the order manager</div>
+                </div>
+
+                <!-- Position Selection (Replaces Next Content dropdown) -->
+                <div class="form-group">
+                    <label>📍 Display Position</label>
+                    <div class="checkbox-group">
+                        <input type="checkbox" name="make_first" id="makeFirst" value="1">
+                        <label for="makeFirst">⭐ Make this the FIRST display content</label>
+                        <small>Automatically becomes #1 in sequence (TV will refresh immediately)</small>
+                    </div>
+
+                    <div id="insertPositionGroup" class="insert-position-group">
+                        <label>📌 Insert after position:</label>
+                        <select name="insert_position" id="insertPosition">
+                            <option value="last">-- At the end (after all existing content) --</option>
+                            <?php
+                            $position = 1;
+                            foreach ($all_content as $content):
+                            ?>
+                                <option value="<?php echo $content['display_order'] ?? ($position - 1); ?>">
+                                    After #<?php echo $position; ?> -
+                                    <?php
+                                    $type_icon = '';
+                                    if ($content['content_type'] === 'slideshow') $type_icon = '🖼️';
+                                    elseif ($content['content_type'] === 'youtube') $type_icon = '▶️';
+                                    elseif ($content['content_type'] === 'message') $type_icon = '💬';
+                                    else $type_icon = '📄';
+                                    echo $type_icon . ' ' . ucfirst($content['content_type']);
+                                    if (!empty($content['description'])) {
+                                        echo ' - ' . htmlspecialchars(substr($content['description'], 0, 30));
+                                    }
+                                    ?>
+                                </option>
+                            <?php
+                                $position++;
+                            endforeach;
+                            ?>
+                        </select>
+                        <div class="info-text">New content will appear AFTER the selected position in the display sequence. TV continues normal playback.</div>
+                    </div>
                 </div>
 
                 <div class="form-group" id="layoutTypeGroup" style="display: none;">
@@ -531,43 +669,10 @@ $all_content = $stmt->fetchAll();
                     <div class="info-text">How long to show this content before moving to next content</div>
                 </div>
 
-
-
-                <div class="form-group">
-                    <label>➡️ Next Content (after expiry)</label>
-                    <select name="next_content_id">
-                        <option value="">— Default Display —</option>
-                        <?php
-                        $position = 1;
-                        foreach ($all_content as $content):
-                            // Skip the current content if it's being edited (for future use)
-                        ?>
-                            <option value="<?php echo $content['id']; ?>">
-                                <?php
-                                // Show position number from display_order
-                                $order_num = $content['display_order'] !== null ? ($content['display_order'] + 1) : $position;
-
-                                $type_icon = '';
-                                if ($content['content_type'] === 'slideshow') $type_icon = '🖼️';
-                                elseif ($content['content_type'] === 'youtube') $type_icon = '▶️';
-                                elseif ($content['content_type'] === 'message') $type_icon = '💬';
-                                else $type_icon = '📄';
-
-                                $display_text = '#' . $order_num . ' ' . $type_icon . ' ' . ucfirst($content['content_type']);
-                                if (!empty($content['description'])) {
-                                    $display_text .= ' - ' . htmlspecialchars(substr($content['description'], 0, 50));
-                                } else {
-                                    $display_text .= ' - ' . date('Y-m-d H:i', strtotime($content['created_at']));
-                                }
-                                echo $display_text;
-                                ?>
-                            </option>
-                        <?php
-                            $position++;
-                        endforeach;
-                        ?>
-                    </select>
-                    <div class="info-text">Select what to show after this content expires (ordered by your display sequence)</div>
+                <div class="form-group" id="loopGroup" style="display: none;">
+                    <label>🔄 Loop Count (for videos)</label>
+                    <input type="number" name="loop_count" value="1" min="1" max="100">
+                    <div class="info-text">How many times to loop the video</div>
                 </div>
 
                 <button type="submit">🚀 Publish to TV</button>
@@ -587,6 +692,18 @@ $all_content = $stmt->fetchAll();
         const layoutTypeGroup = document.getElementById('layoutTypeGroup');
         const layoutType = document.getElementById('layoutType');
         const descriptionField = document.getElementById('descriptionField');
+        const makeFirst = document.getElementById('makeFirst');
+        const insertPositionGroup = document.getElementById('insertPositionGroup');
+
+        // Handle checkbox for "Make First"
+        makeFirst.addEventListener('change', function() {
+            if (this.checked) {
+                insertPositionGroup.style.display = 'none';
+                document.getElementById('insertPosition').value = '';
+            } else {
+                insertPositionGroup.style.display = 'block';
+            }
+        });
 
         function updateDescriptionVisibility() {
             const selectedType = contentType.value;
@@ -739,6 +856,7 @@ $all_content = $stmt->fetchAll();
         loopGroup.style.display = 'none';
         layoutTypeGroup.style.display = 'none';
         descriptionField.classList.remove('active');
+        // insertPositionGroup is visible by default (not hidden)
 
         setTimeout(function() {
             const successMsg = document.querySelector('.success');
