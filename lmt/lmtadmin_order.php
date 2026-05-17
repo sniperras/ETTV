@@ -705,6 +705,32 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
             gap: 12px;
             z-index: 10;
         }
+
+        /* Video thumbnail preview */
+        .video-thumbnail {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            border-radius: 8px;
+        }
+
+        .video-preview-container {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #000;
+        }
+
+        .play-icon-overlay {
+            position: absolute;
+            font-size: 48px;
+            color: rgba(255, 255, 255, 0.8);
+            text-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
+            pointer-events: none;
+        }
     </style>
 </head>
 
@@ -760,6 +786,7 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
                                     if ($content['content_type'] === 'slideshow') echo '🖼️';
                                     elseif ($content['content_type'] === 'youtube') echo '▶️';
                                     elseif ($content['content_type'] === 'message') echo '💬';
+                                    elseif ($content['content_type'] === 'local_video') echo '🎬';
                                     else echo '📕';
                                     ?>
                                 </div>
@@ -968,8 +995,46 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
             const previewDiv = document.getElementById('previewContent');
             if (currentPreviewInterval) clearInterval(currentPreviewInterval);
 
+            // Handle Local Video - Show thumbnail from video file
+            if (content.content_type === 'local_video') {
+                let videoData;
+                try {
+                    videoData = JSON.parse(content.content_data);
+                } catch (e) {
+                    videoData = {
+                        file_path: content.content_data
+                    };
+                }
+
+                let videoPath = videoData.file_path || '';
+                if (!videoPath.startsWith('/')) videoPath = '/' + videoPath;
+                videoPath = videoPath.replace('uploads/uploads/', 'uploads/');
+
+                // Use the video file directly - browser will show first frame as thumbnail
+                previewDiv.innerHTML = `
+                    <div class="video-preview-container">
+                        <video id="previewVideo" 
+                               src="${videoPath}"
+                               muted
+                               preload="metadata"
+                               style="width:100%;height:100%;object-fit:contain;"
+                               onloadedmetadata="this.currentTime = 0.1">
+                        </video>
+                        <div class="play-icon-overlay">▶️</div>
+                    </div>
+                `;
+
+                const previewVideo = document.getElementById('previewVideo');
+                if (previewVideo) {
+                    previewVideo.load();
+                    previewVideo.addEventListener('loadeddata', function() {
+                        // Seek to 0.1 seconds to show a frame (not black)
+                        this.currentTime = 0.1;
+                    });
+                }
+            }
             // Handle Slideshow (including multi-image layouts)
-            if (content.content_type === 'slideshow') {
+            else if (content.content_type === 'slideshow') {
 
                 // Parse content_data JSON first to get layout type and images
                 let layoutType = 'slideshow';
