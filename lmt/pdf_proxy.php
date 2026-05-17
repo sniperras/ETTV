@@ -1,5 +1,5 @@
 <?php
-// lmt/pdf_proxy.php - Serves PDF files securely
+// lmt/pdf_proxy.php - Serves PDF files securely for InfinityFree
 session_start();
 
 // Check authentication
@@ -44,19 +44,26 @@ if ($data && isset($data['file_path'])) {
     $pdfPath = $data['file_path'];
 }
 
-// Find the actual file on disk
+// Get just the filename
+$filename = basename($pdfPath);
+
+// On InfinityFree, files are in /htdocs/uploads/
 $possible_paths = [
-    __DIR__ . '/../' . ltrim($pdfPath, '/'),
-    __DIR__ . '/../../' . ltrim($pdfPath, '/'),
-    $_SERVER['DOCUMENT_ROOT'] . '/ettv/' . ltrim($pdfPath, '/'),
-    $_SERVER['DOCUMENT_ROOT'] . '/' . ltrim($pdfPath, '/')
+    $_SERVER['DOCUMENT_ROOT'] . '/uploads/' . $filename,
+    __DIR__ . '/../uploads/' . $filename,
+    '/home/vol*/if0_*/htdocs/uploads/' . $filename  // Wildcard for InfinityFree
 ];
 
 $filePath = null;
 foreach ($possible_paths as $path) {
-    $real = realpath($path);
-    if ($real && file_exists($real) && is_file($real)) {
-        $filePath = $real;
+    // Use glob for wildcard paths
+    $globbed = glob($path);
+    if ($globbed && !empty($globbed) && file_exists($globbed[0])) {
+        $filePath = $globbed[0];
+        break;
+    }
+    if (file_exists($path)) {
+        $filePath = $path;
         break;
     }
 }
@@ -64,13 +71,6 @@ foreach ($possible_paths as $path) {
 if (!$filePath) {
     http_response_code(404);
     exit('PDF file not found on server');
-}
-
-// Security: ensure file is within uploads directory
-$uploadsDir = realpath(__DIR__ . '/../uploads');
-if (!$uploadsDir || strpos($filePath, $uploadsDir) !== 0) {
-    http_response_code(403);
-    exit('Access denied');
 }
 
 // Serve the PDF

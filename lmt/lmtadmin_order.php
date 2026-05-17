@@ -1,5 +1,5 @@
 <?php
-require_once '../config/db.php';
+require_once __DIR__ . '/../config/db.php';
 
 // Check authentication
 if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'lmtadmin') {
@@ -21,13 +21,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_order'])) {
         if ($order_data && is_array($order_data)) {
             $pdo->beginTransaction();
 
-            // Update display_order for each content
             foreach ($order_data as $index => $item) {
                 $stmt = $pdo->prepare("UPDATE content SET display_order = ? WHERE id = ? AND admin_role = 'lmt'");
                 $stmt->execute([$index, $item['id']]);
             }
 
-            // Build the chain for active content only
             $stmt = $pdo->prepare("UPDATE content SET next_content_id = NULL WHERE admin_role = 'lmt'");
             $stmt->execute();
 
@@ -46,7 +44,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_order'])) {
                 $stmt->execute([$active_items[$i + 1], $active_items[$i]]);
             }
 
-            // Update version for real-time refresh
             $stmt = $pdo->prepare("UPDATE content_version SET version = version + 1, last_update = NOW() WHERE admin_role = 'lmt'");
             $stmt->execute();
 
@@ -75,7 +72,6 @@ if (isset($_GET['toggle_active'])) {
             $stmt = $pdo->prepare("UPDATE content SET is_active = ? WHERE id = ? AND admin_role = 'lmt'");
             $stmt->execute([$new_status, $content_id]);
 
-            // Rebuild the chain
             $stmt = $pdo->prepare("SELECT id, is_active FROM content WHERE admin_role = 'lmt' ORDER BY COALESCE(display_order, 999999) ASC, id ASC");
             $stmt->execute();
             $all_content = $stmt->fetchAll();
@@ -117,7 +113,6 @@ if (isset($_GET['delete_id'])) {
         $stmt2 = $pdo->prepare("DELETE FROM content_slides WHERE content_id = ?");
         $stmt2->execute([$delete_id]);
 
-        // Rebuild chain
         $stmt = $pdo->prepare("SELECT id, is_active FROM content WHERE admin_role = 'lmt' ORDER BY COALESCE(display_order, 999999) ASC, id ASC");
         $stmt->execute();
         $all_content = $stmt->fetchAll();
@@ -963,7 +958,10 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
                     if (data.success && data.content) displayPreview(data.content, data.slides || []);
                     else showPreviewError(data.error || 'Content not found');
                 })
-                .catch(() => showPreviewError('Failed to load preview'));
+                .catch(err => {
+                    console.error('Preview error:', err);
+                    showPreviewError('Failed to load preview');
+                });
         }
 
         function displayPreview(content, slides) {
@@ -971,10 +969,12 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
             if (currentPreviewInterval) clearInterval(currentPreviewInterval);
 
             if (content.content_type === 'slideshow' && slides && slides.length > 0) {
-                let imagePath = slides[0].image_path;
+                // Build full image URL for InfinityFree
+                let imagePath = '/uploads/' + slides[0].image_path.split('/').pop();
                 previewDiv.innerHTML = `
                     <div style="width:100%;height:100%;display:flex;flex-direction:column;justify-content:center;align-items:center;background:#000;">
-                        <img src="${imagePath}" style="max-width:90%;max-height:75%;object-fit:contain;border-radius:10px;" onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22100%22 height=%22100%22%3E%3Crect width=%22100%22 height=%22100%22 fill=%22%23333%22/%3E%3Ctext x=%2250%22 y=%2250%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23fff%22%3ENo Image%3C/text%3E%3C/svg%3E'">
+                        <img src="${imagePath}" style="max-width:90%;max-height:75%;object-fit:contain;border-radius:10px;" 
+                             onerror="this.onerror=null; this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22100%22 height=%22100%22%3E%3Crect width=%22100%22 height=%22100%22 fill=%22%23333%22/%3E%3Ctext x=%2250%22 y=%2250%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23fff%22%3ENo Image%3C/text%3E%3C/svg%3E'">
                         <div style="color:white;margin-top:20px;">📸 Slideshow Preview<br>${slides.length} slide(s) | ${formatDurationPreview(content.display_duration)}</div>
                     </div>`;
             } else if (content.content_type === 'youtube') {
@@ -1000,15 +1000,17 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
                         </div>
                     </div>`;
             } else if (content.content_type === 'ppt') {
-                const pdfUrl = encodeURIComponent(content.content_data);
+                // Use proxy URL for PDF
+                const pdfUrl = content.pdf_proxy_url || '/lmt/pdf_proxy.php?id=' + content.id;
+
                 previewDiv.innerHTML = `
                     <div class="pdf-preview-container">
                         <div class="pdf-toolbar">
                             <span>📄 PDF Document</span>
                             <div class="pdf-nav-buttons">
-                                <button class="pdf-nav-btn" id="pdfPrevBtn" ${!pdfDoc ? 'disabled' : ''}>◀ Prev</button>
-                                <span id="pdfPageInfo">Page 1 / ?</span>
-                                <button class="pdf-nav-btn" id="pdfNextBtn" ${!pdfDoc ? 'disabled' : ''}>Next ▶</button>
+                                <button class="pdf-nav-btn" id="pdfPrevBtn" disabled>◀ Prev</button>
+                                <span id="pdfPageInfo">Loading...</span>
+                                <button class="pdf-nav-btn" id="pdfNextBtn" disabled>Next ▶</button>
                             </div>
                             <span>${formatDurationPreview(content.display_duration)}</span>
                         </div>
@@ -1021,17 +1023,16 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
                         </div>
                     </div>`;
 
-                // Load PDF.js only when needed
                 if (typeof pdfjsLib === 'undefined') {
                     const script = document.createElement('script');
                     script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
                     script.onload = () => {
                         pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-                        renderPdfPreview(decodeURIComponent(pdfUrl));
+                        renderPdfPreview(pdfUrl);
                     };
                     document.head.appendChild(script);
                 } else {
-                    renderPdfPreview(decodeURIComponent(pdfUrl));
+                    renderPdfPreview(pdfUrl);
                 }
             } else {
                 previewDiv.innerHTML = `<div class="preview-placeholder"><div class="preview-placeholder-icon">📄</div><div>Preview not available</div></div>`;

@@ -1,5 +1,5 @@
 <?php
-// get_preview.php - Fixed for InfinityFree
+// get_preview.php - Fixed for InfinityFree with correct paths
 header('Content-Type: application/json');
 
 // Simple path detection for InfinityFree
@@ -42,17 +42,18 @@ if ($content['content_type'] === 'slideshow') {
     $slides = $stmt2->fetchAll();
 }
 
-// Fix image paths - keep them relative, frontend will add domain
+// Fix image paths - InfinityFree uses /htdocs/uploads/
 foreach ($slides as &$slide) {
     if (!empty($slide['image_path'])) {
-        // Remove any existing domain or leading slashes for consistency
-        $slide['image_path'] = ltrim($slide['image_path'], '/');
+        // Remove any existing path prefix and use correct uploads path
+        $filename = basename($slide['image_path']);
+        $slide['image_path'] = '/uploads/' . $filename;
     }
 }
 
-// For PDF, return the ID so we can use proxy
+// For PDF, return the proxy URL
 if ($content['content_type'] === 'ppt') {
-    $content['pdf_proxy_url'] = 'pdf_proxy.php?id=' . $content['id'];
+    $content['pdf_proxy_url'] = '/lmt/pdf_proxy.php?id=' . $content['id'];
 }
 
 echo json_encode([
