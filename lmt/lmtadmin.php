@@ -21,12 +21,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $insert_position = !empty($_POST['insert_position']) ? $_POST['insert_position'] : null;
         $make_first = isset($_POST['make_first']) ? true : false;
         $layout_type = isset($_POST['layout_type']) ? $_POST['layout_type'] : 'slideshow';
-        
+
         // Flag to determine if we should force index refresh
         $force_refresh = $make_first;
 
         // Validate content type
-        $allowed_types = ['slideshow', 'youtube', 'youtube_download', 'message', 'ppt'];
+        $allowed_types = ['slideshow', 'youtube', 'video_upload', 'message', 'ppt'];
         if (!in_array($content_type, $allowed_types)) {
             throw new Exception('Invalid content type');
         }
@@ -130,28 +130,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, content_data, display_duration, loop_count, is_active, display_order) VALUES (?, ?, ?, ?, ?, 1, ?)");
             $stmt->execute(['lmt', $content_type, $youtube_link, $display_duration, $loop_count, $new_display_order]);
-        } elseif ($content_type === 'youtube_download') {
-            // Handle downloaded YouTube video
-            $youtube_file = isset($_POST['youtube_file']) ? $_POST['youtube_file'] : '';
-            $youtube_original_url = isset($_POST['youtube_original_url']) ? $_POST['youtube_original_url'] : '';
-            
-            if (empty($youtube_file)) {
-                throw new Exception('Please download the YouTube video first');
+        } elseif ($content_type === 'video_upload') {
+            // Handle MP4 video upload
+            if (!isset($_FILES['video_file']) || $_FILES['video_file']['error'] !== UPLOAD_ERR_OK) {
+                throw new Exception('Please upload a valid MP4 video file');
             }
-            
-            // Verify file exists
-            $fullPath = __DIR__ . '/..' . $youtube_file;
-            if (!file_exists($fullPath)) {
-                throw new Exception('Video file not found. Please download again.');
-            }
-            
-            // Store as local video content
+
+            $file = $_FILES['video_file'];
+            $allowed_files = ['mp4'];
+            $file_path = validateAndUploadFile($file, '../uploads/videos/', $allowed_files);
+
             $content_data = json_encode([
                 'type' => 'local_video',
-                'file_path' => $youtube_file,
-                'original_url' => $youtube_original_url
+                'file_path' => $file_path
             ]);
-            
+
+            // IMPORTANT: Set content_type to 'local_video' (not 'video_upload')
             $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, description, content_data, display_duration, loop_count, is_active, display_order) VALUES (?, ?, ?, ?, ?, ?, 1, ?)");
             $stmt->execute(['lmt', 'local_video', $description, $content_data, $display_duration, $loop_count, $new_display_order]);
         } elseif ($content_type === 'message') {
@@ -196,7 +190,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $pdo->commit();
 
         $_SESSION['flash_success'] = "Content published successfully!";
-        
+
         // Conditional redirect based on force_refresh flag
         if ($force_refresh) {
             // Refresh the index page immediately by triggering a higher version bump
@@ -206,7 +200,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } else {
             $_SESSION['flash_success'] .= " The TV will continue normal playback with updated sequence.";
         }
-        
+
         header('Location: ' . $_SERVER['PHP_SELF']);
         exit();
     } catch (Exception $e) {
@@ -368,12 +362,14 @@ $all_content = $stmt->fetchAll();
         }
 
         .image-inputs,
-        .ppt-inputs {
+        .ppt-inputs,
+        .video-upload {
             display: none;
         }
 
         .image-inputs.active,
-        .ppt-inputs.active {
+        .ppt-inputs.active,
+        .video-upload.active {
             display: block;
         }
 
@@ -424,11 +420,6 @@ $all_content = $stmt->fetchAll();
             margin-top: 10px;
             margin-left: 10px;
             padding: 8px 15px;
-        }
-
-        .btn-download {
-            background: #ff4444;
-            white-space: nowrap;
         }
 
         .success {
@@ -519,42 +510,6 @@ $all_content = $stmt->fetchAll();
             border: 1px solid #cce5ff;
         }
 
-        .download-progress {
-            display: none;
-            margin-top: 10px;
-        }
-
-        .progress-bar-container {
-            background: #e0e0e0;
-            border-radius: 10px;
-            overflow: hidden;
-        }
-
-        .progress-bar {
-            width: 0%;
-            height: 20px;
-            background: #28a745;
-            transition: width 0.3s;
-        }
-
-        .download-result {
-            margin-top: 10px;
-        }
-
-        .download-success {
-            color: green;
-            padding: 10px;
-            background: #d4edda;
-            border-radius: 5px;
-        }
-
-        .download-error {
-            color: red;
-            padding: 10px;
-            background: #f8d7da;
-            border-radius: 5px;
-        }
-
         @media (max-width: 768px) {
             .header {
                 flex-direction: column;
@@ -601,7 +556,7 @@ $all_content = $stmt->fetchAll();
                         <option value="">Select Content Type</option>
                         <option value="slideshow">🖼️ Images / Slideshow</option>
                         <option value="youtube">▶️ YouTube Video (Embed)</option>
-                        <option value="youtube_download">📥 YouTube (Download & Play Locally)</option>
+                        <option value="video_upload">🎬 Upload MP4 Video</option>
                         <option value="message">💬 Custom Message</option>
                         <option value="ppt">📄 PDF Document</option>
                     </select>
@@ -692,35 +647,22 @@ $all_content = $stmt->fetchAll();
                     </div>
                 </div>
 
-                <!-- Regular YouTube Embed -->
+                <!-- YouTube Embed -->
                 <div id="youtubeLink" class="image-inputs">
                     <div class="form-group">
-                        <label>🎬 YouTube URL</label>
+                        <label>🎬 YouTube URL (Embed)</label>
                         <input type="url" name="youtube_link" placeholder="https://www.youtube.com/watch?v=...">
-                        <div class="info-text">Video will play without controls. Duration is controlled by "Overall Display Duration" below.</div>
+                        <div class="info-text">Video will play embedded. Duration is controlled by "Overall Display Duration" below.</div>
                     </div>
                 </div>
 
-                <!-- YouTube Download Section -->
-                <div id="youtubeDownload" class="image-inputs" style="display: none;">
+                <!-- MP4 Video Upload -->
+                <div id="videoUpload" class="video-upload">
                     <div class="form-group">
-                        <label>🎬 YouTube URL (Download & Play Locally)</label>
-                        <div style="display: flex; gap: 10px; margin-bottom: 10px;">
-                            <input type="url" id="youtube_download_url" placeholder="https://www.youtube.com/watch?v=..." style="flex: 1;">
-                            <button type="button" id="downloadYoutubeBtn" class="btn btn-download">⬇️ Download & Save</button>
-                        </div>
-                        <div id="downloadProgress" class="download-progress">
-                            <div class="progress-bar-container">
-                                <div id="progressBar" class="progress-bar"></div>
-                            </div>
-                            <p id="progressText" style="font-size: 12px; margin-top: 5px;">Downloading video... This may take a minute.</p>
-                        </div>
-                        <div id="downloadResult" class="download-result"></div>
-                        <div class="info-text">Download video to your server for reliable playback. Works without autoplay restrictions. Max 100MB for free hosting.</div>
+                        <label>🎬 Upload MP4 Video</label>
+                        <input type="file" name="video_file" accept="video/mp4">
+                        <div class="info-text">Upload MP4 video file. Max 10MB due to hosting limits.</div>
                     </div>
-                    
-                    <input type="hidden" name="youtube_file" id="youtube_file">
-                    <input type="hidden" name="youtube_original_url" id="youtube_original_url">
                 </div>
 
                 <div id="customMessage" class="image-inputs">
@@ -776,7 +718,7 @@ $all_content = $stmt->fetchAll();
         const slideshowUpload = document.getElementById('slideshowUpload');
         const pptUpload = document.getElementById('pptUpload');
         const youtubeLink = document.getElementById('youtubeLink');
-        const youtubeDownload = document.getElementById('youtubeDownload');
+        const videoUpload = document.getElementById('videoUpload');
         const customMessage = document.getElementById('customMessage');
         const loopGroup = document.getElementById('loopGroup');
         const layoutTypeGroup = document.getElementById('layoutTypeGroup');
@@ -784,11 +726,6 @@ $all_content = $stmt->fetchAll();
         const descriptionField = document.getElementById('descriptionField');
         const makeFirst = document.getElementById('makeFirst');
         const insertPositionGroup = document.getElementById('insertPositionGroup');
-        const downloadYoutubeBtn = document.getElementById('downloadYoutubeBtn');
-        const youtubeDownloadUrl = document.getElementById('youtube_download_url');
-        const downloadProgress = document.getElementById('downloadProgress');
-        const downloadResult = document.getElementById('downloadResult');
-        const progressBar = document.getElementById('progressBar');
 
         // Handle checkbox for "Make First"
         makeFirst.addEventListener('change', function() {
@@ -835,7 +772,7 @@ $all_content = $stmt->fetchAll();
             slideshowUpload.classList.remove('active');
             pptUpload.classList.remove('active');
             youtubeLink.classList.remove('active');
-            youtubeDownload.style.display = 'none';
+            videoUpload.classList.remove('active');
             customMessage.classList.remove('active');
 
             updateDescriptionVisibility();
@@ -853,8 +790,8 @@ $all_content = $stmt->fetchAll();
                 youtubeLink.classList.add('active');
                 layoutTypeGroup.style.display = 'none';
                 loopGroup.style.display = 'block';
-            } else if (this.value === 'youtube_download') {
-                youtubeDownload.style.display = 'block';
+            } else if (this.value === 'video_upload') {
+                videoUpload.classList.add('active');
                 layoutTypeGroup.style.display = 'none';
                 loopGroup.style.display = 'none';
             } else if (this.value === 'message') {
@@ -912,57 +849,6 @@ $all_content = $stmt->fetchAll();
             updateDurationVisibility();
         }
 
-        // YouTube download functionality
-        if (downloadYoutubeBtn) {
-            downloadYoutubeBtn.addEventListener('click', async function() {
-                const url = youtubeDownloadUrl.value;
-                if (!url) {
-                    alert('Please enter a YouTube URL');
-                    return;
-                }
-                
-                downloadProgress.style.display = 'block';
-                downloadResult.innerHTML = '';
-                progressBar.style.width = '30%';
-                this.disabled = true;
-                this.textContent = 'Downloading...';
-                
-                const formData = new FormData();
-                formData.append('url', url);
-                
-                try {
-                    const response = await fetch('youtube_proxy.php', {
-                        method: 'POST',
-                        body: formData
-                    });
-                    
-                    progressBar.style.width = '80%';
-                    const data = await response.json();
-                    
-                    if (data.success) {
-                        progressBar.style.width = '100%';
-                        document.getElementById('youtube_file').value = data.file_url;
-                        document.getElementById('youtube_original_url').value = url;
-                        downloadResult.innerHTML = `<div class="download-success">✅ ${data.message}</div>`;
-                    } else {
-                        downloadResult.innerHTML = `<div class="download-error">❌ Error: ${data.error}</div>`;
-                        if (data.details) {
-                            downloadResult.innerHTML += `<pre style="font-size: 11px; margin-top: 5px; color: red;">${data.details}</pre>`;
-                        }
-                    }
-                } catch (error) {
-                    downloadResult.innerHTML = `<div class="download-error">❌ Download failed: ${error.message}</div>`;
-                } finally {
-                    setTimeout(() => {
-                        downloadProgress.style.display = 'none';
-                        this.disabled = false;
-                        this.textContent = '⬇️ Download & Save';
-                        progressBar.style.width = '0%';
-                    }, 2000);
-                }
-            });
-        }
-
         document.getElementById('contentForm').addEventListener('submit', function(e) {
             const type = contentType.value;
             if (!type) {
@@ -994,10 +880,10 @@ $all_content = $stmt->fetchAll();
                     alert('Please enter a YouTube URL.');
                     e.preventDefault();
                 }
-            } else if (type === 'youtube_download') {
-                const youtubeFile = document.getElementById('youtube_file').value;
-                if (!youtubeFile) {
-                    alert('Please download the YouTube video first.');
+            } else if (type === 'video_upload') {
+                const videoFile = document.querySelector('input[name="video_file"]');
+                if (!videoFile || !videoFile.files.length) {
+                    alert('Please upload an MP4 video file.');
                     e.preventDefault();
                 }
             } else if (type === 'message') {

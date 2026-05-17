@@ -269,6 +269,23 @@ if ($version) $current_version = $version['version'];
             border: none;
         }
 
+        /* Local Video Container */
+        .local-video-container {
+            width: 100%;
+            height: 100%;
+            position: relative;
+            background: #000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .local-video-container video {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+
         .pdf-container {
             width: 100%;
             height: 100%;
@@ -459,7 +476,6 @@ if ($version) $current_version = $version['version'];
         </div>
     </div>
 
-    <!-- Description Bar - Persistent (stays visible) -->
     <div id="descriptionBar" class="description-bar"></div>
 
     <div class="display-container">
@@ -480,11 +496,10 @@ if ($version) $current_version = $version['version'];
         let pollingInterval = null;
         let currentYouTubePlayer = null;
 
-        // PDF variables
         let pdfDoc = null;
         let currentPageSet = 0;
         let totalPages = 0;
-        let pagesPerView = 4; // 4 pages horizontally
+        let pagesPerView = 4;
 
         function clearAllTimeouts() {
             currentTimeouts.forEach(timeout => clearTimeout(timeout));
@@ -516,7 +531,6 @@ if ($version) $current_version = $version['version'];
             pdfDoc = null;
             currentPageSet = 0;
 
-            // Show description for slideshow and PDF content - PERSISTENT (no auto-hide)
             if ((currentContent.content_type === 'slideshow' || currentContent.content_type === 'ppt') && currentContent.description) {
                 showDescription(currentContent.description);
             } else {
@@ -585,6 +599,8 @@ if ($version) $current_version = $version['version'];
                 }
             } else if (currentContent.content_type === 'youtube') {
                 loadYouTube();
+            } else if (currentContent.content_type === 'local_video') {
+                loadLocalVideo();
             } else if (currentContent.content_type === 'message') {
                 loadMessage();
             } else if (currentContent.content_type === 'ppt') {
@@ -684,6 +700,72 @@ if ($version) $current_version = $version['version'];
             }
         }
 
+        function loadLocalVideo() {
+            const wrapper = document.getElementById('contentWrapper');
+            let videoData;
+
+            try {
+                videoData = JSON.parse(currentContent.content_data);
+            } catch (e) {
+                videoData = {
+                    file_path: currentContent.content_data
+                };
+            }
+
+            let videoPath = videoData.file_path;
+            if (!videoPath.startsWith('/') && !videoPath.startsWith('http')) {
+                videoPath = '/' + videoPath;
+            }
+
+            videoPath = videoPath.replace('uploads/uploads/', 'uploads/');
+
+            wrapper.innerHTML = `
+                <div class="local-video-container">
+                    <video id="localVideo" 
+                           autoplay 
+                           loop 
+                           playsinline 
+                           muted
+                           style="width:100%;height:100%;object-fit:contain;">
+                        <source src="${videoPath}" type="video/mp4">
+                        Your browser does not support the video tag.
+                    </video>
+                </div>
+            `;
+
+            const video = document.getElementById('localVideo');
+
+            if (video) {
+                video.play().catch(err => console.log('Initial autoplay failed:', err));
+
+                // Aggressive unmute strategy for TVs (no remote)
+                let attempts = 0;
+                const tryUnmute = () => {
+                    if (attempts >= 6) return;
+                    attempts++;
+
+                    video.muted = false;
+                    video.volume = 1.0;
+                    video.play().catch(() => {});
+                    console.log(`Unmute attempt ${attempts}/6`);
+                };
+
+                setTimeout(tryUnmute, 600);
+                setTimeout(tryUnmute, 1800);
+                setTimeout(tryUnmute, 3500);
+                setTimeout(tryUnmute, 6000);
+                setTimeout(tryUnmute, 9000);
+            }
+
+            if (currentContent.display_duration && currentContent.display_duration > 0) {
+                const timeoutId = setTimeout(() => {
+                    console.log('Video duration expired, loading next content');
+                    loadNextContent();
+                }, currentContent.display_duration * 1000);
+                currentTimeouts.push(timeoutId);
+            }
+        }
+
         function loadYouTube() {
             const wrapper = document.getElementById('contentWrapper');
             const videoId = extractYouTubeId(currentContent.content_data);
@@ -704,19 +786,37 @@ if ($version) $current_version = $version['version'];
                     videoId: videoId,
                     playerVars: {
                         'autoplay': 1,
-                        'mute': 1, // Start muted - always allowed
+                        'mute': 1,
                         'controls': 0,
                         'rel': 0,
                         'modestbranding': 1,
                         'iv_load_policy': 3,
                         'enablejsapi': 1,
                         'playsinline': 1,
-                        'origin': window.location.origin // Fixes postMessage errors
+                        'origin': window.location.origin
                     },
                     events: {
                         'onReady': function(event) {
                             console.log('YouTube player ready, playing muted');
                             event.target.playVideo();
+
+                            // Aggressive unmute attempts for YouTube
+                            let attempts = 0;
+                            const tryUnmute = () => {
+                                if (attempts >= 6) return;
+                                attempts++;
+                                try {
+                                    event.target.unMute();
+                                    event.target.setVolume(100);
+                                    console.log(`YouTube unmute attempt ${attempts}/6`);
+                                } catch (e) {}
+                            };
+
+                            setTimeout(tryUnmute, 600);
+                            setTimeout(tryUnmute, 1800);
+                            setTimeout(tryUnmute, 3500);
+                            setTimeout(tryUnmute, 6000);
+                            setTimeout(tryUnmute, 9000);
                         },
                         'onStateChange': function(event) {
                             if (event.data === YT.PlayerState.ENDED) {
@@ -771,30 +871,21 @@ if ($version) $current_version = $version['version'];
             }
             filePath = filePath.replace('uploads/uploads/', 'uploads/');
 
-            // Full URL to PDF
             const pdfUrl = window.location.origin + filePath;
 
-            // Show loading
             wrapper.innerHTML = `
                 <div class="pdf-container">
                     <div class="pdf-loading">Loading PDF...</div>
                 </div>
             `;
 
-            // Load PDF using pdf.js
             pdfjsLib.getDocument(pdfUrl).promise.then(function(pdf) {
                 pdfDoc = pdf;
                 totalPages = pdf.numPages;
                 currentPageSet = 0;
-
                 console.log('PDF loaded. Total pages:', totalPages);
-
-                // Display first set of pages (horizontal row)
                 displayPDFPageSet();
-
-                // Schedule next set of pages
                 scheduleNextPDFSet();
-
             }).catch(function(error) {
                 console.error('Error loading PDF:', error);
                 wrapper.innerHTML = `
@@ -819,24 +910,18 @@ if ($version) $current_version = $version['version'];
             const endPage = Math.min(startPage + pagesPerView - 1, totalPages);
 
             if (startPage > totalPages) {
-                // All pages shown, move to next content
                 loadNextContent();
                 return;
             }
 
             const wrapper = document.getElementById('contentWrapper');
-
-            // Create horizontal grid container
             let html = '<div class="pdf-container"><div class="pdf-horizontal-grid">';
 
-            // Load each page in the current set
             const pagePromises = [];
             for (let pageNum = startPage; pageNum <= endPage; pageNum++) {
                 pagePromises.push(
                     pdfDoc.getPage(pageNum).then(function(page) {
-                        // Calculate scale to fit within the viewport width
-                        // Each page takes 1/4 of the screen width
-                        const containerWidth = window.innerWidth / pagesPerView - 30; // subtract gap
+                        const containerWidth = window.innerWidth / pagesPerView - 30;
                         const viewport = page.getViewport({
                             scale: 1
                         });
@@ -844,13 +929,10 @@ if ($version) $current_version = $version['version'];
                         const scaledViewport = page.getViewport({
                             scale: scale
                         });
-
-                        // Create canvas for rendering
                         const canvas = document.createElement('canvas');
                         const context = canvas.getContext('2d');
                         canvas.width = scaledViewport.width;
                         canvas.height = scaledViewport.height;
-
                         return page.render({
                             canvasContext: context,
                             viewport: scaledViewport
@@ -867,17 +949,10 @@ if ($version) $current_version = $version['version'];
             Promise.all(pagePromises).then(function(pagesData) {
                 let innerHtml = '<div class="pdf-container"><div class="pdf-horizontal-grid">';
                 pagesData.forEach(function(pageData) {
-                    innerHtml += `
-                        <div class="pdf-page">
-                            <img src="${pageData.imageData}" alt="Page ${pageData.pageNum}">
-                        </div>
-                    `;
+                    innerHtml += `<div class="pdf-page"><img src="${pageData.imageData}" alt="Page ${pageData.pageNum}"></div>`;
                 });
-                // Add empty placeholders if less than 4 pages
                 for (let i = pagesData.length; i < pagesPerView; i++) {
-                    innerHtml += `<div class="pdf-page" style="background: #333; display: flex; align-items: center; justify-content: center; color: #666;">
-                                    <span>End</span>
-                                  </div>`;
+                    innerHtml += `<div class="pdf-page" style="background: #333; display: flex; align-items: center; justify-content: center; color: #666;"><span>End</span></div>`;
                 }
                 innerHtml += `</div><div class="pdf-page-number">Pages ${startPage}-${endPage} of ${totalPages}</div></div>`;
                 wrapper.innerHTML = innerHtml;
@@ -885,21 +960,13 @@ if ($version) $current_version = $version['version'];
         }
 
         function scheduleNextPDFSet() {
-            // Clear any existing PDF timeout
-            if (window.pdfTimeout) {
-                clearTimeout(window.pdfTimeout);
-            }
-
-            // Schedule next set after display_duration (default 60 seconds = 1 minute)
-            const duration = (currentContent.display_duration && currentContent.display_duration > 0) ?
-                currentContent.display_duration * 1000 :
-                60000; // 1 minute default
-
+            if (window.pdfTimeout) clearTimeout(window.pdfTimeout);
+            const duration = (currentContent.display_duration && currentContent.display_duration > 0) ? currentContent.display_duration * 1000 : 60000;
             window.pdfTimeout = setTimeout(() => {
                 if (pdfDoc) {
                     currentPageSet++;
                     displayPDFPageSet();
-                    scheduleNextPDFSet(); // Schedule the next one
+                    scheduleNextPDFSet();
                 }
             }, duration);
             currentTimeouts.push(window.pdfTimeout);
@@ -991,7 +1058,6 @@ if ($version) $current_version = $version['version'];
             }, 5000);
         }
 
-        // YouTube API callback
         window.onYouTubeIframeAPIReady = function() {
             console.log('YouTube API ready');
             if (window._pendingYouTubeCreate) {
@@ -1001,9 +1067,7 @@ if ($version) $current_version = $version['version'];
             }
         };
 
-        // Initialize
         document.addEventListener('DOMContentLoaded', function() {
-            // Show initial description if present (persistent - no auto-hide)
             if ((currentContent.content_type === 'slideshow' || currentContent.content_type === 'ppt') && currentContent.description) {
                 showDescription(currentContent.description);
             }
