@@ -37,15 +37,26 @@ if (!$content) {
 
 $slides = [];
 if ($content['content_type'] === 'slideshow') {
+    // First try to get from content_slides table
     $stmt2 = $pdo->prepare("SELECT * FROM content_slides WHERE content_id = ? ORDER BY slide_order ASC");
     $stmt2->execute([$id]);
     $slides = $stmt2->fetchAll();
+
+    // If no slides in table, try to extract from content_data JSON (for multi-image layouts)
+    if (empty($slides)) {
+        $data = json_decode($content['content_data'], true);
+        if ($data && isset($data['images']) && is_array($data['images'])) {
+            foreach ($data['images'] as $img) {
+                $slides[] = ['image_path' => $img['path'], 'duration' => $img['duration'] ?? 10];
+            }
+        }
+    }
 }
 
 // Fix image paths - InfinityFree uses /htdocs/uploads/
 foreach ($slides as &$slide) {
     if (!empty($slide['image_path'])) {
-        // Remove any existing path prefix and use correct uploads path
+        // Get just the filename
         $filename = basename($slide['image_path']);
         $slide['image_path'] = '/uploads/' . $filename;
     }

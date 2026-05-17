@@ -968,23 +968,146 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
             const previewDiv = document.getElementById('previewContent');
             if (currentPreviewInterval) clearInterval(currentPreviewInterval);
 
-            if (content.content_type === 'slideshow' && slides && slides.length > 0) {
-                // Build full image URL for InfinityFree
-                let imagePath = '/uploads/' + slides[0].image_path.split('/').pop();
-                previewDiv.innerHTML = `
-                    <div style="width:100%;height:100%;display:flex;flex-direction:column;justify-content:center;align-items:center;background:#000;">
-                        <img src="${imagePath}" style="max-width:90%;max-height:75%;object-fit:contain;border-radius:10px;" 
-                             onerror="this.onerror=null; this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22100%22 height=%22100%22%3E%3Crect width=%22100%22 height=%22100%22 fill=%22%23333%22/%3E%3Ctext x=%2250%22 y=%2250%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23fff%22%3ENo Image%3C/text%3E%3C/svg%3E'">
-                        <div style="color:white;margin-top:20px;">📸 Slideshow Preview<br>${slides.length} slide(s) | ${formatDurationPreview(content.display_duration)}</div>
-                    </div>`;
-            } else if (content.content_type === 'youtube') {
+            // Handle Slideshow (including multi-image layouts)
+            if (content.content_type === 'slideshow') {
+
+                // Parse content_data JSON first to get layout type and images
+                let layoutType = 'slideshow';
+                let contentImages = [];
+                try {
+                    const parsed = JSON.parse(content.content_data);
+                    if (parsed && parsed.type) layoutType = parsed.type;
+                    // Extract images from content_data if present (for multi-image layouts)
+                    if (parsed && parsed.images && parsed.images.length > 0) {
+                        contentImages = parsed.images.map(img => ({
+                            image_path: '/uploads/' + img.path.split('/').pop()
+                        }));
+                    }
+                } catch (e) {
+                    // Not JSON, use default
+                }
+
+                // Use slides from DB if available, otherwise use images from content_data
+                const allSlides = (slides && slides.length > 0) ? slides : contentImages;
+
+                if (allSlides.length === 0) {
+                    previewDiv.innerHTML = `<div class="preview-placeholder"><div class="preview-placeholder-icon">⚠️</div><div>No images found</div></div>`;
+                    return;
+                }
+
+                // MULTI-IMAGE LAYOUTS (2-image, 3-image, 4-image)
+                if (layoutType === '2-image' || layoutType === '3-image' || layoutType === '4-image') {
+                    // Determine grid dimensions
+                    let cols, rows, label;
+                    if (layoutType === '4-image') {
+                        cols = 2;
+                        rows = 2;
+                        label = '4 Images Grid (2x2)';
+                    } else if (layoutType === '3-image') {
+                        cols = 3;
+                        rows = 1;
+                        label = '3 Images Side by Side';
+                    } else {
+                        cols = 2;
+                        rows = 1;
+                        label = '2 Images Side by Side';
+                    }
+
+                    // Get the images for this layout
+                    const maxImages = layoutType === '4-image' ? 4 : (layoutType === '3-image' ? 3 : 2);
+                    const displaySlides = allSlides.slice(0, maxImages);
+
+                    // Build HTML for each image
+                    let imagesHtml = '';
+                    for (let i = 0; i < maxImages; i++) {
+                        if (i < displaySlides.length) {
+                            const imageUrl = displaySlides[i].image_path;
+                            imagesHtml += `
+                        <div style="overflow:hidden;border-radius:8px;background:#222;display:flex;align-items:center;justify-content:center;width:100%;height:100%;">
+                            <img src="${imageUrl}"
+                                 style="width:100%;height:100%;object-fit:cover;"
+                                 onerror="this.parentElement.style.background='#444';this.style.display='none'">
+                        </div>
+                    `;
+                        } else {
+                            imagesHtml += `
+                        <div style="background:#333;border-radius:8px;display:flex;align-items:center;justify-content:center;color:#666;font-size:12px;width:100%;height:100%;">
+                            Empty
+                        </div>
+                    `;
+                        }
+                    }
+
+                    previewDiv.innerHTML = `
+                <div style="width:100%;height:100%;display:flex;flex-direction:column;
+                     justify-content:center;align-items:center;background:#111;padding:15px;gap:10px;">
+                    <div style="display:grid;grid-template-columns:repeat(${cols},1fr);
+                         grid-template-rows:repeat(${rows},1fr);gap:8px;
+                         width:90%;height:70%;max-height:350px;">
+                        ${imagesHtml}
+                    </div>
+                    <div style="color:white;text-align:center;font-size:14px;">
+                        🖼️ ${label}<br>
+                        ${displaySlides.length} image(s) | ${formatDurationPreview(content.display_duration)}
+                    </div>
+                </div>`;
+                }
+                // STANDARD SLIDESHOW (one image at a time)
+                else {
+                    let currentSlide = 0;
+
+                    // Create dot indicators
+                    const dots = allSlides.map((_, i) =>
+                        `<span id="dot-${i}" style="display:inline-block;width:10px;height:10px;border-radius:50%;
+                 background:${i === 0 ? '#fff' : 'rgba(255,255,255,0.4)'};margin:0 4px;transition:background 0.3s;"></span>`
+                    ).join('');
+
+                    previewDiv.innerHTML = `
+                <div style="width:100%;height:100%;display:flex;flex-direction:column;
+                     justify-content:center;align-items:center;background:#000;">
+                    <img id="slideShowImg"
+                         src="${allSlides[0].image_path}"
+                         style="max-width:90%;max-height:75%;object-fit:contain;border-radius:10px;transition:opacity 0.5s;"
+                         onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22100%22 height=%22100%22%3E%3Crect width=%22100%22 height=%22100%22 fill=%22%23333%22/%3E%3Ctext x=%2250%22 y=%2250%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23fff%22%3ENo Image%3C/text%3E%3C/svg%3E'">
+                    <div style="color:white;margin-top:15px;text-align:center;">
+                        🎞️ Slideshow — ${allSlides.length} slide(s) | ${formatDurationPreview(content.display_duration)}
+                    </div>
+                    <div style="margin-top:10px;">${dots}</div>
+                </div>`;
+
+                    // Auto-rotate slides if more than one
+                    if (allSlides.length > 1) {
+                        currentPreviewInterval = setInterval(() => {
+                            const img = document.getElementById('slideShowImg');
+                            const prevDot = document.getElementById('dot-' + currentSlide);
+                            if (!img) {
+                                clearInterval(currentPreviewInterval);
+                                return;
+                            }
+                            if (prevDot) prevDot.style.background = 'rgba(255,255,255,0.4)';
+                            img.style.opacity = '0';
+                            setTimeout(() => {
+                                currentSlide = (currentSlide + 1) % allSlides.length;
+                                img.src = allSlides[currentSlide].image_path;
+                                img.style.opacity = '1';
+                                const newDot = document.getElementById('dot-' + currentSlide);
+                                if (newDot) newDot.style.background = '#fff';
+                            }, 500);
+                        }, 3000);
+                    }
+                }
+            }
+            // Handle YouTube
+            else if (content.content_type === 'youtube') {
                 const videoId = extractYouTubeId(content.content_data);
                 previewDiv.innerHTML = `
-                    <div style="width:100%;height:100%;display:flex;flex-direction:column;justify-content:center;align-items:center;background:#000;">
-                        <img src="https://img.youtube.com/vi/${videoId}/mqdefault.jpg" style="max-width:90%;border-radius:10px;">
-                        <div style="color:white;margin-top:20px;">▶️ YouTube Video<br>Duration: ${formatDurationPreview(content.display_duration)}</div>
-                    </div>`;
-            } else if (content.content_type === 'message') {
+            <div style="width:100%;height:100%;display:flex;flex-direction:column;justify-content:center;align-items:center;background:#000;">
+                <img src="https://img.youtube.com/vi/${videoId}/mqdefault.jpg" style="max-width:90%;border-radius:10px;">
+                <div style="color:white;margin-top:20px;">▶️ YouTube Video<br>Duration: ${formatDurationPreview(content.display_duration)}</div>
+            </div>`;
+            }
+            // Handle Message
+            else if (content.content_type === 'message') {
                 const icons = {
                     warning: '⚠️',
                     caution: '⚡',
@@ -992,36 +1115,37 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
                     congratulation: '🎉'
                 };
                 previewDiv.innerHTML = `
-                    <div style="width:100%;height:100%;display:flex;justify-content:center;align-items:center;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);">
-                        <div style="background:rgba(255,255,255,0.9);border-radius:20px;padding:30px;text-align:center;max-width:80%;">
-                            <div style="font-size:64px;">${icons[content.message_type] || '📝'}</div>
-                            <div style="margin-top:20px;font-weight:bold;">${escapeHtml(content.content_data)}</div>
-                            <div style="margin-top:10px;font-size:12px;">Duration: ${formatDurationPreview(content.display_duration)}</div>
-                        </div>
-                    </div>`;
-            } else if (content.content_type === 'ppt') {
-                // Use proxy URL for PDF
+            <div style="width:100%;height:100%;display:flex;justify-content:center;align-items:center;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);">
+                <div style="background:rgba(255,255,255,0.9);border-radius:20px;padding:30px;text-align:center;max-width:80%;">
+                    <div style="font-size:64px;">${icons[content.message_type] || '📝'}</div>
+                    <div style="margin-top:20px;font-weight:bold;">${escapeHtml(content.content_data)}</div>
+                    <div style="margin-top:10px;font-size:12px;">Duration: ${formatDurationPreview(content.display_duration)}</div>
+                </div>
+            </div>`;
+            }
+            // Handle PDF
+            else if (content.content_type === 'ppt') {
                 const pdfUrl = content.pdf_proxy_url || '/lmt/pdf_proxy.php?id=' + content.id;
 
                 previewDiv.innerHTML = `
-                    <div class="pdf-preview-container">
-                        <div class="pdf-toolbar">
-                            <span>📄 PDF Document</span>
-                            <div class="pdf-nav-buttons">
-                                <button class="pdf-nav-btn" id="pdfPrevBtn" disabled>◀ Prev</button>
-                                <span id="pdfPageInfo">Loading...</span>
-                                <button class="pdf-nav-btn" id="pdfNextBtn" disabled>Next ▶</button>
-                            </div>
-                            <span>${formatDurationPreview(content.display_duration)}</span>
-                        </div>
-                        <div class="pdf-canvas-container">
-                            <canvas id="pdfCanvas" class="pdf-canvas"></canvas>
-                        </div>
-                        <div id="pdfLoading" class="pdf-loading">
-                            <div style="font-size:40px;">📄</div>
-                            <div>Loading PDF...</div>
-                        </div>
-                    </div>`;
+            <div class="pdf-preview-container">
+                <div class="pdf-toolbar">
+                    <span>📄 PDF Document</span>
+                    <div class="pdf-nav-buttons">
+                        <button class="pdf-nav-btn" id="pdfPrevBtn" disabled>◀ Prev</button>
+                        <span id="pdfPageInfo">Loading...</span>
+                        <button class="pdf-nav-btn" id="pdfNextBtn" disabled>Next ▶</button>
+                    </div>
+                    <span>${formatDurationPreview(content.display_duration)}</span>
+                </div>
+                <div class="pdf-canvas-container">
+                    <canvas id="pdfCanvas" class="pdf-canvas"></canvas>
+                </div>
+                <div id="pdfLoading" class="pdf-loading">
+                    <div style="font-size:40px;">📄</div>
+                    <div>Loading PDF...</div>
+                </div>
+            </div>`;
 
                 if (typeof pdfjsLib === 'undefined') {
                     const script = document.createElement('script');
