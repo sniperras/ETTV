@@ -80,3 +80,4 @@ header('Cache-Control: public, max-age=3600');
 header('Accept-Ranges: bytes');
 readfile($filePath);
 exit();
+?>

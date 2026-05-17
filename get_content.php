@@ -7,8 +7,7 @@ header('Cache-Control: no-cache, must-revalidate');
 error_reporting(E_ALL);
 ini_set('display_errors', 0);
 
-function jsonErrorHandler($errno, $errstr, $errfile, $errline)
-{
+function jsonErrorHandler($errno, $errstr, $errfile, $errline) {
     echo json_encode([
         'success' => false,
         'error' => "Error: $errstr in $errfile on line $errline"
@@ -17,8 +16,7 @@ function jsonErrorHandler($errno, $errstr, $errfile, $errline)
 }
 set_error_handler('jsonErrorHandler');
 
-function jsonExceptionHandler($e)
-{
+function jsonExceptionHandler($e) {
     echo json_encode([
         'success' => false,
         'error' => $e->getMessage()
@@ -53,14 +51,12 @@ if (!$db_loaded || !isset($pdo)) {
 }
 
 // Helper function to validate mode
-function validateMode($mode)
-{
+function validateMode($mode) {
     return in_array($mode, ['lmt', 'bmt']);
 }
 
 // Helper function to get slides for a content
-function getSlides($pdo, $content_id)
-{
+function getSlides($pdo, $content_id) {
     $slides = [];
     $stmt = $pdo->prepare("SELECT * FROM content_slides WHERE content_id = ? ORDER BY slide_order ASC");
     $stmt->execute([$content_id]);
@@ -71,7 +67,7 @@ try {
     // Handle direct content ID request (for next content and preview)
     if (isset($_GET['id'])) {
         $id = (int)$_GET['id'];
-
+        
         $stmt = $pdo->prepare("SELECT * FROM content WHERE id = ?");
         $stmt->execute([$id]);
         $content = $stmt->fetch();
@@ -115,7 +111,7 @@ try {
             $stmt = $pdo->prepare("SELECT * FROM default_settings WHERE admin_role = ?");
             $stmt->execute([$mode]);
             $default = $stmt->fetch();
-
+            
             if (!$default) {
                 $stmt = $pdo->prepare("INSERT INTO default_settings (admin_role, default_content_type, default_content_data, default_message_type) VALUES (?, 'message', 'Welcome to ET TV Display', 'memo')");
                 $stmt->execute([$mode]);
@@ -139,7 +135,7 @@ try {
                 ],
                 'slides' => []
             ]);
-        }
+        } 
         // Return current active content
         else {
             $stmt = $pdo->prepare("SELECT * FROM content WHERE admin_role = ? AND is_active = 1 ORDER BY COALESCE(display_order, id) ASC, created_at DESC LIMIT 1");
@@ -162,7 +158,7 @@ try {
                 $stmt = $pdo->prepare("SELECT * FROM default_settings WHERE admin_role = ?");
                 $stmt->execute([$mode]);
                 $default = $stmt->fetch();
-
+                
                 if (!$default) {
                     $default = [
                         'default_content_type' => 'message',
@@ -186,7 +182,8 @@ try {
                 ]);
             }
         }
-    } else {
+    } 
+    else {
         echo json_encode([
             'success' => false,
             'error' => 'Missing parameters. Please provide either "id" or "mode" parameter.',
@@ -211,3 +208,4 @@ try {
         'slides' => []
     ]);
 }
+?>

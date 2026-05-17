@@ -1,18 +1,21 @@
-# .htaccess - Fix for InfinityFree
+# Disable MultiViews - this can cause routing issues
+Options -MultiViews
+
+# Force rewrite engine to use the correct base
+RewriteBase /ettv/
+
+Options -Indexes
+AddDefaultCharset UTF-8
 RewriteEngine On
 
-# Ensure all requests to PHP files work correctly
-RewriteCond %{REQUEST_FILENAME} !-f
-RewriteCond %{REQUEST_FILENAME} !-d
+# Let real files and folders load directly — no redirect
+RewriteCond %{REQUEST_FILENAME} -f [OR]
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteRule ^ - [L]
+
+# Only redirect truly missing paths to index.php
 RewriteRule ^(.*)$ index.php [QSA,L]
 
-# Disable directory browsing
-Options -Indexes
-
-# Set default charset
-AddDefaultCharset UTF-8
-
-# Enable CORS for API requests
 <IfModule mod_headers.c>
     Header set Access-Control-Allow-Origin "*"
 </IfModule>
