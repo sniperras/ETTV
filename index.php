@@ -198,7 +198,6 @@ if ($version) $current_version = $version['version'];
             background: #000;
         }
 
-        /* Description Bar - Persistent */
         .description-bar {
             position: fixed;
             top: 0;
@@ -226,11 +225,6 @@ if ($version) $current_version = $version['version'];
             visibility: visible;
         }
 
-        /* Add padding to content wrapper when description is visible */
-        .description-bar.visible+.display-container .content-wrapper {
-            padding-top: 60px;
-        }
-
         .content-wrapper {
             width: 100%;
             height: 100%;
@@ -238,7 +232,6 @@ if ($version) $current_version = $version['version'];
             align-items: center;
             justify-content: center;
             overflow: hidden;
-            transition: padding-top 0.3s ease;
         }
 
         .slideshow-container {
@@ -276,7 +269,6 @@ if ($version) $current_version = $version['version'];
             border: none;
         }
 
-        /* PDF Horizontal Grid Styles - 4 pages in a row */
         .pdf-container {
             width: 100%;
             height: 100%;
@@ -712,18 +704,18 @@ if ($version) $current_version = $version['version'];
                     videoId: videoId,
                     playerVars: {
                         'autoplay': 1,
-                        'mute': 1,
+                        'mute': 1, // Start muted - always allowed
                         'controls': 0,
                         'rel': 0,
                         'modestbranding': 1,
                         'iv_load_policy': 3,
                         'enablejsapi': 1,
-                        'playsinline': 1
+                        'playsinline': 1,
+                        'origin': window.location.origin // Fixes postMessage errors
                     },
                     events: {
                         'onReady': function(event) {
-                            console.log('YouTube player ready');
-                            event.target.mute();
+                            console.log('YouTube player ready, playing muted');
                             event.target.playVideo();
                         },
                         'onStateChange': function(event) {
@@ -734,6 +726,7 @@ if ($version) $current_version = $version['version'];
                         },
                         'onError': function(event) {
                             console.error('YouTube error:', event.data);
+                            loadNextContent();
                         }
                     }
                 });
