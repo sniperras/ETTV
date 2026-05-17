@@ -53,6 +53,22 @@ foreach ($slides as &$slide) {
     }
 }
 
+// Fix PDF path for ppt type
+if ($content['content_type'] === 'ppt' && !empty($content['content_data'])) {
+    // Parse JSON if it's stored as JSON
+    $pdfData = json_decode($content['content_data'], true);
+    if ($pdfData && isset($pdfData['file_path'])) {
+        $pdfPath = $pdfData['file_path'];
+    } else {
+        $pdfPath = $content['content_data'];
+    }
+
+    if (!preg_match('/^https?:\/\//', $pdfPath)) {
+        $pdfPath = '/ettv/' . ltrim($pdfPath, '/');
+    }
+    $content['content_data'] = $pdfPath;
+}
+
 echo json_encode([
     'success' => true,
     'content' => $content,

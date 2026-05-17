@@ -234,17 +234,73 @@ if ($version) $current_version = $version['version'];
             background: #000;
         }
 
+        .video-container iframe {
+            width: 100%;
+            height: 100%;
+            border: none;
+        }
+
+        /* PDF Horizontal Grid Styles - 4 pages in a row */
         .pdf-container {
             width: 100%;
             height: 100%;
             background: #000;
+            display: flex;
+            flex-direction: column;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .pdf-horizontal-grid {
+            display: flex;
+            flex-direction: row;
+            width: 100%;
+            height: 100%;
+            gap: 15px;
+            padding: 20px;
+            background: #1a1a1a;
+        }
+
+        .pdf-page {
+            flex: 1;
+            background: white;
+            border-radius: 8px;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
             position: relative;
         }
 
-        .pdf-iframe {
+        .pdf-page img {
             width: 100%;
             height: 100%;
-            border: none;
+            object-fit: contain;
+        }
+
+        .pdf-page-number {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 8px 20px;
+            border-radius: 20px;
+            font-size: 14px;
+            z-index: 10;
+            font-weight: bold;
+        }
+
+        .pdf-loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-size: 18px;
+            text-align: center;
         }
 
         .message-container {
@@ -335,42 +391,6 @@ if ($version) $current_version = $version['version'];
             z-index: 999;
         }
 
-        /* Fallback unmute button */
-        .unmute-btn {
-            position: fixed;
-            bottom: 30px;
-            left: 50%;
-            transform: translateX(-50%);
-            background: #ff4444;
-            color: white;
-            border: none;
-            padding: 15px 30px;
-            border-radius: 50px;
-            font-size: 18px;
-            font-weight: bold;
-            cursor: pointer;
-            z-index: 2000;
-            animation: pulse 1s infinite;
-            box-shadow: 0 0 20px rgba(255, 68, 68, 0.5);
-        }
-
-        @keyframes pulse {
-            0% {
-                transform: translateX(-50%) scale(1);
-                opacity: 1;
-            }
-
-            50% {
-                transform: translateX(-50%) scale(1.05);
-                opacity: 0.9;
-            }
-
-            100% {
-                transform: translateX(-50%) scale(1);
-                opacity: 1;
-            }
-        }
-
         @media (max-width: 768px) {
             .message-text {
                 font-size: 24px;
@@ -383,8 +403,18 @@ if ($version) $current_version = $version['version'];
             .message-icon {
                 font-size: 50px;
             }
+
+            .pdf-horizontal-grid {
+                gap: 8px;
+                padding: 10px;
+            }
         }
     </style>
+    <!-- PDF.js library for PDF processing -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+    <script>
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
+    </script>
 </head>
 
 <body>
@@ -413,22 +443,16 @@ if ($version) $current_version = $version['version'];
         let currentTimeouts = [];
         let pollingInterval = null;
         let currentYouTubePlayer = null;
-        let unmuteButton = null;
 
-        // Global flags for YouTube unmute detection
-        window._unmuteDone = false;
-        window._unmuteCheckTimer = null;
+        // PDF variables
+        let pdfDoc = null;
+        let currentPageSet = 0;
+        let totalPages = 0;
+        let pagesPerView = 4; // 4 pages horizontally
 
         function clearAllTimeouts() {
             currentTimeouts.forEach(timeout => clearTimeout(timeout));
             currentTimeouts = [];
-
-            // Reset YouTube unmute flags
-            window._unmuteDone = false;
-            if (window._unmuteCheckTimer) {
-                clearTimeout(window._unmuteCheckTimer);
-                window._unmuteCheckTimer = null;
-            }
 
             if (currentYouTubePlayer && typeof currentYouTubePlayer.destroy === 'function') {
                 try {
@@ -436,36 +460,14 @@ if ($version) $current_version = $version['version'];
                 } catch (e) {}
                 currentYouTubePlayer = null;
             }
-            if (unmuteButton) {
-                unmuteButton.remove();
-                unmuteButton = null;
-            }
-        }
-
-        function showUnmuteButton(player) {
-            if (unmuteButton) return;
-            unmuteButton = document.createElement('button');
-            unmuteButton.className = 'unmute-btn';
-            unmuteButton.innerHTML = '🔊 Tap to Enable Sound';
-            unmuteButton.onclick = () => {
-                try {
-                    player.unMute();
-                    player.setVolume(100);
-                    player.playVideo();
-                    unmuteButton.remove();
-                    unmuteButton = null;
-                    console.log('User manually unmuted');
-                } catch (e) {
-                    console.error('Manual unmute failed:', e);
-                }
-            };
-            document.body.appendChild(unmuteButton);
         }
 
         function updateCurrentContent(data) {
             currentContent = data.content;
             currentSlides = data.slides || [];
             currentLayoutData = null;
+            pdfDoc = null;
+            currentPageSet = 0;
 
             if (currentContent.content_type === 'slideshow' && currentContent.content_data) {
                 try {
@@ -635,7 +637,6 @@ if ($version) $current_version = $version['version'];
 
             wrapper.innerHTML = `<div id="${containerId}" style="width:100%;height:100%;background:#000;"></div>`;
 
-            // Function to create player once API is ready
             const createPlayer = () => {
                 if (currentYouTubePlayer) {
                     try {
@@ -662,43 +663,8 @@ if ($version) $current_version = $version['version'];
                             console.log('YouTube player ready');
                             event.target.mute();
                             event.target.playVideo();
-                            // Don't attempt unmute here - wait for onStateChange
                         },
                         'onStateChange': function(event) {
-                            if (event.data === YT.PlayerState.PLAYING) {
-                                // Only attempt unmute once, when video confirms it's playing
-                                if (!window._unmuteDone) {
-                                    window._unmuteDone = true;
-                                    console.log('Video playing, attempting unmute...');
-                                    event.target.unMute();
-                                    event.target.setVolume(100);
-
-                                    // Set timer to detect if browser forces pause after unmute
-                                    window._unmuteCheckTimer = setTimeout(function() {
-                                        // If we reach here without being paused, unmute worked
-                                        console.log('Unmute appears successful - video still playing');
-                                        window._unmuteCheckTimer = null;
-                                    }, 1000);
-                                }
-                            }
-
-                            if (event.data === YT.PlayerState.PAUSED) {
-                                // Check if this pause happened RIGHT AFTER our unmute attempt
-                                if (window._unmuteDone && window._unmuteCheckTimer) {
-                                    clearTimeout(window._unmuteCheckTimer);
-                                    window._unmuteCheckTimer = null;
-                                    // Browser forced pause = unmute was blocked
-                                    console.log('Browser blocked unmute - showing button');
-                                    window._unmuteDone = false;
-                                    // Restart muted silently
-                                    event.target.mute();
-                                    event.target.playVideo();
-                                    // Show the tap-to-unmute button
-                                    showUnmuteButton(event.target);
-                                }
-                                // Other pauses (e.g. from clearAllTimeouts) - do nothing
-                            }
-
                             if (event.data === YT.PlayerState.ENDED) {
                                 console.log('Video ended, moving to next content');
                                 loadNextContent();
@@ -711,7 +677,6 @@ if ($version) $current_version = $version['version'];
                 });
             };
 
-            // Load YouTube API if not already loaded
             if (typeof YT !== 'undefined' && YT.Player) {
                 createPlayer();
             } else {
@@ -724,10 +689,9 @@ if ($version) $current_version = $version['version'];
                 }
             }
 
-            // Fallback timer to move to next content
             if (currentContent.display_duration && currentContent.display_duration > 0) {
                 const timeoutId = setTimeout(() => {
-                    console.log('Video duration expired (fallback), loading next content');
+                    console.log('Video duration expired, loading next content');
                     loadNextContent();
                 }, currentContent.display_duration * 1000);
                 currentTimeouts.push(timeoutId);
@@ -752,13 +716,138 @@ if ($version) $current_version = $version['version'];
             }
             filePath = filePath.replace('uploads/uploads/', 'uploads/');
 
-            const viewerUrl = `https://docs.google.com/viewer?url=${encodeURIComponent(window.location.origin + filePath)}&embedded=true`;
-            wrapper.innerHTML = `<div class="pdf-container"><iframe src="${viewerUrl}" class="pdf-iframe" allowfullscreen></iframe></div>`;
+            // Full URL to PDF
+            const pdfUrl = window.location.origin + filePath;
 
-            if (currentContent.display_duration && currentContent.display_duration > 0) {
-                const timeoutId = setTimeout(() => loadNextContent(), currentContent.display_duration * 1000);
-                currentTimeouts.push(timeoutId);
+            // Show loading
+            wrapper.innerHTML = `
+                <div class="pdf-container">
+                    <div class="pdf-loading">Loading PDF...</div>
+                </div>
+            `;
+
+            // Load PDF using pdf.js
+            pdfjsLib.getDocument(pdfUrl).promise.then(function(pdf) {
+                pdfDoc = pdf;
+                totalPages = pdf.numPages;
+                currentPageSet = 0;
+
+                console.log('PDF loaded. Total pages:', totalPages);
+
+                // Display first set of pages (horizontal row)
+                displayPDFPageSet();
+
+                // Schedule next set of pages
+                scheduleNextPDFSet();
+
+            }).catch(function(error) {
+                console.error('Error loading PDF:', error);
+                wrapper.innerHTML = `
+                    <div class="message-container">
+                        <div class="message-card memo">
+                            <div class="message-icon">📄</div>
+                            <div class="message-text">Error loading PDF. Please check the file.</div>
+                        </div>
+                    </div>
+                `;
+                if (currentContent.display_duration > 0) {
+                    const timeoutId = setTimeout(() => loadNextContent(), currentContent.display_duration * 1000);
+                    currentTimeouts.push(timeoutId);
+                }
+            });
+        }
+
+        function displayPDFPageSet() {
+            if (!pdfDoc) return;
+
+            const startPage = currentPageSet * pagesPerView + 1;
+            const endPage = Math.min(startPage + pagesPerView - 1, totalPages);
+
+            if (startPage > totalPages) {
+                // All pages shown, move to next content
+                loadNextContent();
+                return;
             }
+
+            const wrapper = document.getElementById('contentWrapper');
+
+            // Create horizontal grid container
+            let html = '<div class="pdf-container"><div class="pdf-horizontal-grid">';
+
+            // Load each page in the current set
+            const pagePromises = [];
+            for (let pageNum = startPage; pageNum <= endPage; pageNum++) {
+                pagePromises.push(
+                    pdfDoc.getPage(pageNum).then(function(page) {
+                        // Calculate scale to fit within the viewport width
+                        // Each page takes 1/4 of the screen width
+                        const containerWidth = window.innerWidth / pagesPerView - 30; // subtract gap
+                        const viewport = page.getViewport({
+                            scale: 1
+                        });
+                        const scale = containerWidth / viewport.width;
+                        const scaledViewport = page.getViewport({
+                            scale: scale
+                        });
+
+                        // Create canvas for rendering
+                        const canvas = document.createElement('canvas');
+                        const context = canvas.getContext('2d');
+                        canvas.width = scaledViewport.width;
+                        canvas.height = scaledViewport.height;
+
+                        return page.render({
+                            canvasContext: context,
+                            viewport: scaledViewport
+                        }).promise.then(function() {
+                            return {
+                                pageNum: pageNum,
+                                imageData: canvas.toDataURL()
+                            };
+                        });
+                    })
+                );
+            }
+
+            Promise.all(pagePromises).then(function(pagesData) {
+                let innerHtml = '<div class="pdf-container"><div class="pdf-horizontal-grid">';
+                pagesData.forEach(function(pageData) {
+                    innerHtml += `
+                        <div class="pdf-page">
+                            <img src="${pageData.imageData}" alt="Page ${pageData.pageNum}">
+                        </div>
+                    `;
+                });
+                // Add empty placeholders if less than 4 pages
+                for (let i = pagesData.length; i < pagesPerView; i++) {
+                    innerHtml += `<div class="pdf-page" style="background: #333; display: flex; align-items: center; justify-content: center; color: #666;">
+                                    <span>End</span>
+                                  </div>`;
+                }
+                innerHtml += `</div><div class="pdf-page-number">Pages ${startPage}-${endPage} of ${totalPages}</div></div>`;
+                wrapper.innerHTML = innerHtml;
+            });
+        }
+
+        function scheduleNextPDFSet() {
+            // Clear any existing PDF timeout
+            if (window.pdfTimeout) {
+                clearTimeout(window.pdfTimeout);
+            }
+
+            // Schedule next set after display_duration (default 60 seconds = 1 minute)
+            const duration = (currentContent.display_duration && currentContent.display_duration > 0) ?
+                currentContent.display_duration * 1000 :
+                60000; // 1 minute default
+
+            window.pdfTimeout = setTimeout(() => {
+                if (pdfDoc) {
+                    currentPageSet++;
+                    displayPDFPageSet();
+                    scheduleNextPDFSet(); // Schedule the next one
+                }
+            }, duration);
+            currentTimeouts.push(window.pdfTimeout);
         }
 
         function loadMessage() {

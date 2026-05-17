@@ -13,7 +13,7 @@ try {
 } catch (PDOException $e) {
 }
 
-// Handle save order
+// Handle save order (ONLY saves order, does NOT activate all)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_order'])) {
     try {
         $order_data = json_decode($_POST['order_data'], true);
@@ -27,31 +27,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_order'])) {
                 $stmt->execute([$index, $item['id']]);
             }
 
-            // Build the chain: set next_content_id based on order
-            $prev_id = null;
+            // Build the chain: set next_content_id based on order (only for ACTIVE content)
+            $stmt = $pdo->prepare("UPDATE content SET next_content_id = NULL WHERE admin_role = 'lmt'");
+            $stmt->execute();
+
+            // Build chain only for active content in order
+            $active_items = [];
             foreach ($order_data as $item) {
-                if ($prev_id !== null) {
-                    $stmt = $pdo->prepare("UPDATE content SET next_content_id = ? WHERE id = ?");
-                    $stmt->execute([$item['id'], $prev_id]);
+                $stmt = $pdo->prepare("SELECT is_active FROM content WHERE id = ?");
+                $stmt->execute([$item['id']]);
+                $content = $stmt->fetch();
+                if ($content && $content['is_active'] == 1) {
+                    $active_items[] = $item['id'];
                 }
-                $prev_id = $item['id'];
-            }
-            // Last item has no next content
-            if ($prev_id !== null) {
-                $stmt = $pdo->prepare("UPDATE content SET next_content_id = NULL WHERE id = ?");
-                $stmt->execute([$prev_id]);
             }
 
-            // Set ALL content as active (they will play in sequence)
-            $stmt = $pdo->prepare("UPDATE content SET is_active = 1 WHERE admin_role = 'lmt'");
-            $stmt->execute();
+            for ($i = 0; $i < count($active_items) - 1; $i++) {
+                $stmt = $pdo->prepare("UPDATE content SET next_content_id = ? WHERE id = ?");
+                $stmt->execute([$active_items[$i + 1], $active_items[$i]]);
+            }
 
             // Update version for real-time refresh
             $stmt = $pdo->prepare("UPDATE content_version SET version = version + 1, last_update = NOW() WHERE admin_role = 'lmt'");
             $stmt->execute();
 
             $pdo->commit();
-            $_SESSION['flash_success'] = "Display order saved successfully! TV will play in this sequence.";
+            $_SESSION['flash_success'] = "Display order saved successfully! TV will update immediately.";
         }
     } catch (Exception $e) {
         $pdo->rollBack();
@@ -65,10 +66,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_order'])) {
 if (isset($_GET['toggle_active'])) {
     try {
         $content_id = (int)$_GET['toggle_active'];
-        $stmt = $pdo->prepare("UPDATE content SET is_active = NOT is_active WHERE id = ? AND admin_role = 'lmt'");
-        $stmt->execute([$content_id]);
 
-        $_SESSION['flash_success'] = "Content status updated!";
+        $stmt = $pdo->prepare("SELECT is_active FROM content WHERE id = ? AND admin_role = 'lmt'");
+        $stmt->execute([$content_id]);
+        $current = $stmt->fetch();
+
+        if ($current) {
+            $new_status = $current['is_active'] ? 0 : 1;
+            $stmt = $pdo->prepare("UPDATE content SET is_active = ? WHERE id = ? AND admin_role = 'lmt'");
+            $stmt->execute([$new_status, $content_id]);
+
+            // Rebuild the chain
+            $stmt = $pdo->prepare("SELECT id, is_active FROM content WHERE admin_role = 'lmt' ORDER BY COALESCE(display_order, 999999) ASC, id ASC");
+            $stmt->execute();
+            $all_content = $stmt->fetchAll();
+
+            $stmt = $pdo->prepare("UPDATE content SET next_content_id = NULL WHERE admin_role = 'lmt'");
+            $stmt->execute();
+
+            $active_ids = [];
+            foreach ($all_content as $item) {
+                if ($item['is_active'] == 1) {
+                    $active_ids[] = $item['id'];
+                }
+            }
+
+            for ($i = 0; $i < count($active_ids) - 1; $i++) {
+                $stmt = $pdo->prepare("UPDATE content SET next_content_id = ? WHERE id = ?");
+                $stmt->execute([$active_ids[$i + 1], $active_ids[$i]]);
+            }
+
+            $stmt = $pdo->prepare("UPDATE content_version SET version = version + 1, last_update = NOW() WHERE admin_role = 'lmt'");
+            $stmt->execute();
+        }
+
+        $_SESSION['flash_success'] = "Content status updated! TV will update immediately.";
     } catch (Exception $e) {
         $_SESSION['flash_error'] = "Error: " . $e->getMessage();
     }
@@ -86,10 +118,30 @@ if (isset($_GET['delete_id'])) {
         $stmt2 = $pdo->prepare("DELETE FROM content_slides WHERE content_id = ?");
         $stmt2->execute([$delete_id]);
 
+        // Rebuild chain
+        $stmt = $pdo->prepare("SELECT id, is_active FROM content WHERE admin_role = 'lmt' ORDER BY COALESCE(display_order, 999999) ASC, id ASC");
+        $stmt->execute();
+        $all_content = $stmt->fetchAll();
+
+        $stmt = $pdo->prepare("UPDATE content SET next_content_id = NULL WHERE admin_role = 'lmt'");
+        $stmt->execute();
+
+        $active_ids = [];
+        foreach ($all_content as $item) {
+            if ($item['is_active'] == 1) {
+                $active_ids[] = $item['id'];
+            }
+        }
+
+        for ($i = 0; $i < count($active_ids) - 1; $i++) {
+            $stmt = $pdo->prepare("UPDATE content SET next_content_id = ? WHERE id = ?");
+            $stmt->execute([$active_ids[$i + 1], $active_ids[$i]]);
+        }
+
         $stmt3 = $pdo->prepare("UPDATE content_version SET version = version + 1, last_update = NOW() WHERE admin_role = 'lmt'");
         $stmt3->execute();
 
-        $_SESSION['flash_success'] = "Content deleted successfully!";
+        $_SESSION['flash_success'] = "Content deleted successfully! TV will update immediately.";
     } catch (Exception $e) {
         $_SESSION['flash_error'] = "Error deleting content: " . $e->getMessage();
     }
@@ -109,7 +161,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['edit_duration'])) {
         $stmt2 = $pdo->prepare("UPDATE content_version SET version = version + 1, last_update = NOW() WHERE admin_role = 'lmt'");
         $stmt2->execute();
 
-        $_SESSION['flash_success'] = "Duration updated successfully!";
+        $_SESSION['flash_success'] = "Duration updated successfully! TV will update immediately.";
     } catch (Exception $e) {
         $_SESSION['flash_error'] = "Error: " . $e->getMessage();
     }
@@ -144,11 +196,9 @@ function formatDuration($seconds)
     return round($seconds / 86400) . ' days';
 }
 
-// Get layout type from content_data for display
 function getLayoutType($content_type, $content_data)
 {
     if ($content_type !== 'slideshow') return null;
-
     $data = json_decode($content_data, true);
     if ($data && isset($data['type'])) {
         return $data['type'];
@@ -170,7 +220,6 @@ function getLayoutIcon($layout_type)
     }
 }
 
-// Get all content for LMT ordered by display_order
 $stmt = $pdo->prepare("SELECT * FROM content WHERE admin_role = 'lmt' ORDER BY COALESCE(display_order, 999999) ASC, id ASC");
 $stmt->execute();
 $contents = $stmt->fetchAll();
@@ -255,11 +304,6 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
 
         .btn-success {
             background: #28a745;
-            color: white;
-        }
-
-        .btn-info {
-            background: #17a2b8;
             color: white;
         }
 
@@ -427,7 +471,7 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
             margin-bottom: 20px;
         }
 
-        .modal {
+        .modal-overlay {
             display: none;
             position: fixed;
             top: 0;
@@ -435,79 +479,151 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
             width: 100%;
             height: 100%;
             background: rgba(0, 0, 0, 0.5);
-            z-index: 1000;
+            z-index: 2000;
             align-items: center;
             justify-content: center;
         }
 
-        .modal.active {
+        .modal-overlay.active {
             display: flex;
         }
 
-        .modal-content {
+        .confirmation-modal {
             background: white;
-            border-radius: 15px;
+            border-radius: 16px;
             padding: 30px;
-            max-width: 500px;
+            max-width: 450px;
             width: 90%;
+            text-align: center;
+            animation: modalSlideIn 0.3s ease-out;
         }
 
-        .modal-header {
+        @keyframes modalSlideIn {
+            from {
+                opacity: 0;
+                transform: translateY(-30px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .modal-icon {
+            font-size: 64px;
             margin-bottom: 20px;
-            font-size: 20px;
+        }
+
+        .modal-title {
+            font-size: 22px;
             font-weight: bold;
+            margin-bottom: 15px;
+            color: #333;
         }
 
-        .modal-body {
-            margin-bottom: 20px;
+        .modal-message {
+            font-size: 14px;
+            color: #666;
+            margin-bottom: 25px;
+            line-height: 1.5;
         }
 
-        .modal-body select {
-            width: 100%;
-            padding: 10px;
-            border: 2px solid #e0e0e0;
-            border-radius: 8px;
-        }
-
-        .modal-footer {
+        .modal-buttons {
             display: flex;
-            justify-content: flex-end;
-            gap: 10px;
+            gap: 15px;
+            justify-content: center;
+        }
+
+        .modal-btn {
+            padding: 10px 25px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .modal-btn:hover {
+            transform: scale(1.02);
+        }
+
+        .modal-btn-cancel {
+            background: #6c757d;
+            color: white;
+        }
+
+        .modal-btn-confirm {
+            background: #dc3545;
+            color: white;
+        }
+
+        .modal-btn-confirm.success {
+            background: #28a745;
+        }
+
+        .notification-container {
+            position: fixed;
+            top: 90px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2000;
+            width: auto;
+            min-width: 300px;
+            max-width: 500px;
+            pointer-events: none;
+        }
+
+        .success,
+        .error {
+            padding: 12px 20px;
+            border-radius: 8px;
+            margin: 0;
+            border-left: 4px solid;
+            text-align: center;
+            font-weight: 500;
+            pointer-events: auto;
+            animation: slideDown 0.3s ease-out;
         }
 
         .success {
             background: #d4edda;
             color: #155724;
-            padding: 12px;
-            border-radius: 8px;
-            margin: 10px 20px 0 20px;
-            border-left: 4px solid #28a745;
+            border-left-color: #28a745;
         }
 
         .error {
             background: #f8d7da;
             color: #721c24;
-            padding: 12px;
-            border-radius: 8px;
-            margin: 10px 20px 0 20px;
-            border-left: 4px solid #dc3545;
+            border-left-color: #dc3545;
+        }
+
+        @keyframes slideDown {
+            from {
+                opacity: 0;
+                transform: translateY(-20px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
         }
 
         .fade-out {
-            animation: fadeOut 3s ease forwards;
+            animation: fadeOut 0.5s ease forwards;
         }
 
         @keyframes fadeOut {
-            0% {
+            from {
                 opacity: 1;
+                transform: translateY(0);
             }
 
-            70% {
-                opacity: 1;
-            }
-
-            100% {
+            to {
                 opacity: 0;
+                transform: translateY(-20px);
                 visibility: hidden;
             }
         }
@@ -522,6 +638,11 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
             margin-left: 8px;
         }
     </style>
+    <!-- PDF.js library for PDF preview -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script>
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    </script>
 </head>
 
 <body>
@@ -533,18 +654,32 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
         </div>
     </div>
 
-    <?php if ($success): ?>
-        <div class="success" id="successMsg"><?php echo htmlspecialchars($success); ?></div>
-    <?php endif; ?>
-    <?php if ($error): ?>
-        <div class="error" id="errorMsg"><?php echo htmlspecialchars($error); ?></div>
-    <?php endif; ?>
+    <div class="notification-container" id="notificationContainer">
+        <?php if ($success): ?>
+            <div class="success" id="successMsg"><?php echo htmlspecialchars($success); ?></div>
+        <?php endif; ?>
+        <?php if ($error): ?>
+            <div class="error" id="errorMsg"><?php echo htmlspecialchars($error); ?></div>
+        <?php endif; ?>
+    </div>
+
+    <div id="confirmModal" class="modal-overlay">
+        <div class="confirmation-modal">
+            <div class="modal-icon" id="modalIcon">⚠️</div>
+            <div class="modal-title" id="modalTitle">Confirm Action</div>
+            <div class="modal-message" id="modalMessage">Are you sure?</div>
+            <div class="modal-buttons">
+                <button class="modal-btn modal-btn-cancel" onclick="closeConfirmModal()">Cancel</button>
+                <button class="modal-btn modal-btn-confirm" id="confirmBtn">Confirm</button>
+            </div>
+        </div>
+    </div>
 
     <div class="container">
         <div class="order-panel">
             <div class="order-header">
                 <h3>📋 Display Sequence (Drag to reorder)</h3>
-                <button id="saveOrderBtn" class="btn btn-primary">💾 Save Order & Activate All</button>
+                <button id="saveOrderBtn" class="btn btn-primary">💾 Save Order</button>
             </div>
             <div class="order-list" id="orderList">
                 <?php if (empty($contents)): ?>
@@ -562,7 +697,7 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
                                     if ($content['content_type'] === 'slideshow') echo '🖼️';
                                     elseif ($content['content_type'] === 'youtube') echo '▶️';
                                     elseif ($content['content_type'] === 'message') echo '💬';
-                                    else echo '📄';
+                                    else echo '📕';
                                     ?>
                                 </div>
                                 <div class="item-info">
@@ -580,9 +715,6 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
                                     <?php endif; ?>
                                     <div class="item-details">
                                         ⏱️ Duration: <?php echo formatDuration($content['display_duration']); ?>
-                                        <?php if ($content['content_type'] === 'slideshow' && $layout_type === 'slideshow'): ?>
-                                            | 🎞️ Slideshow mode
-                                        <?php endif; ?>
                                         <?php if ($content['is_active']): ?>
                                             <span style="color: #28a745; margin-left: 8px;">✅ Active</span>
                                         <?php else: ?>
@@ -592,11 +724,11 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
                                 </div>
                             </div>
                             <div class="item-actions">
-                                <a href="?toggle_active=<?php echo $content['id']; ?>" class="btn btn-<?php echo $content['is_active'] ? 'secondary' : 'success'; ?> btn-icon" onclick="return confirm('Toggle active status?')">
+                                <button class="btn btn-<?php echo $content['is_active'] ? 'secondary' : 'success'; ?> btn-icon" onclick="showToggleModal(<?php echo $content['id']; ?>, <?php echo $content['is_active'] ? 'false' : 'true'; ?>)">
                                     <?php echo $content['is_active'] ? '🔴 Deactivate' : '🟢 Activate'; ?>
-                                </a>
+                                </button>
                                 <button class="btn btn-warning btn-icon" onclick="editDuration(<?php echo $content['id']; ?>, <?php echo $content['display_duration']; ?>)">✏️ Edit</button>
-                                <button class="btn btn-danger btn-icon" onclick="deleteContent(<?php echo $content['id']; ?>)">🗑️ Delete</button>
+                                <button class="btn btn-danger btn-icon" onclick="showDeleteModal(<?php echo $content['id']; ?>)">🗑️ Delete</button>
                             </div>
                         </div>
                     <?php endforeach; ?>
@@ -618,14 +750,14 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
         </div>
     </div>
 
-    <div id="editModal" class="modal">
-        <div class="modal-content">
-            <div class="modal-header">✏️ Edit Display Duration</div>
+    <div id="editModal" class="modal-overlay">
+        <div class="confirmation-modal">
+            <div class="modal-icon">✏️</div>
+            <div class="modal-title">Edit Display Duration</div>
             <form method="POST">
                 <input type="hidden" name="content_id" id="editContentId">
-                <div class="modal-body">
-                    <label>Display Duration:</label>
-                    <select name="display_duration" id="editDuration" required>
+                <div style="margin-bottom: 20px;">
+                    <select name="display_duration" id="editDuration" style="width: 100%; padding: 10px; border: 2px solid #e0e0e0; border-radius: 8px;">
                         <option value="30s">30 seconds</option>
                         <option value="1m">1 minute</option>
                         <option value="5m">5 minutes</option>
@@ -640,9 +772,9 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
                         <option value="24h">24 hours</option>
                     </select>
                 </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-                    <button type="submit" name="edit_duration" class="btn btn-primary">Save Changes</button>
+                <div class="modal-buttons">
+                    <button type="button" class="modal-btn modal-btn-cancel" onclick="closeEditModal()">Cancel</button>
+                    <button type="submit" name="edit_duration" class="modal-btn modal-btn-confirm success">Save Changes</button>
                 </div>
             </form>
         </div>
@@ -650,13 +782,67 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
 
     <script>
         let draggedItem = null;
+        let pendingAction = null;
+        let pendingId = null;
+        let pdfDoc = null;
+        let currentPdfPage = 1;
 
+        // Auto-hide notifications
         setTimeout(function() {
             const successMsg = document.getElementById('successMsg');
             const errorMsg = document.getElementById('errorMsg');
-            if (successMsg) successMsg.classList.add('fade-out');
-            if (errorMsg) errorMsg.classList.add('fade-out');
-        }, 2000);
+            if (successMsg) {
+                setTimeout(() => {
+                    successMsg.classList.add('fade-out');
+                    setTimeout(() => {
+                        if (successMsg) successMsg.style.display = 'none';
+                    }, 500);
+                }, 3000);
+            }
+            if (errorMsg) {
+                setTimeout(() => {
+                    errorMsg.classList.add('fade-out');
+                    setTimeout(() => {
+                        if (errorMsg) errorMsg.style.display = 'none';
+                    }, 500);
+                }, 3000);
+            }
+        }, 100);
+
+        function showConfirmModal(title, message, icon, onConfirm) {
+            document.getElementById('modalIcon').innerHTML = icon;
+            document.getElementById('modalTitle').innerHTML = title;
+            document.getElementById('modalMessage').innerHTML = message;
+            const confirmBtn = document.getElementById('confirmBtn');
+            const newBtn = confirmBtn.cloneNode(true);
+            confirmBtn.parentNode.replaceChild(newBtn, confirmBtn);
+            newBtn.onclick = () => {
+                closeConfirmModal();
+                onConfirm();
+            };
+            document.getElementById('confirmModal').classList.add('active');
+        }
+
+        function closeConfirmModal() {
+            document.getElementById('confirmModal').classList.remove('active');
+        }
+
+        function closeEditModal() {
+            document.getElementById('editModal').classList.remove('active');
+        }
+
+        function showToggleModal(id, activate) {
+            const message = activate ? 'Are you sure you want to ACTIVATE this content?' : 'Are you sure you want to DEACTIVATE this content?';
+            showConfirmModal(activate ? '🟢 Activate Content' : '🔴 Deactivate Content', message, activate ? '✅' : '⚠️', () => {
+                window.location.href = `?toggle_active=${id}`;
+            });
+        }
+
+        function showDeleteModal(id) {
+            showConfirmModal('🗑️ Delete Content', '⚠️ This action CANNOT be undone!', '⚠️', () => {
+                window.location.href = `?delete_id=${id}`;
+            });
+        }
 
         function initDragAndDrop() {
             const items = document.querySelectorAll('.order-item');
@@ -700,8 +886,8 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
 
         function loadPreview(contentId) {
             const previewDiv = document.getElementById('previewContent');
+            if (previewDiv._slideInterval) clearInterval(previewDiv._slideInterval);
             previewDiv.innerHTML = '<div class="preview-placeholder"><div class="preview-placeholder-icon">⏳</div><div>Loading preview...</div></div>';
-
             fetch('get_preview.php?id=' + contentId + '&t=' + Date.now())
                 .then(r => r.json())
                 .then(data => {
@@ -713,11 +899,13 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
 
         function displayPreview(content, slides) {
             const previewDiv = document.getElementById('previewContent');
+            if (previewDiv._slideInterval) clearInterval(previewDiv._slideInterval);
 
             if (content.content_type === 'slideshow' && slides && slides.length > 0) {
+                let imagePath = slides[0].image_path;
                 previewDiv.innerHTML = `
                     <div style="width:100%;height:100%;display:flex;flex-direction:column;justify-content:center;align-items:center;background:#000;">
-                        <img src="${slides[0].image_path}" style="max-width:90%;max-height:80%;object-fit:contain;border-radius:10px;" onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22100%22 height=%22100%22 viewBox=%220 0 100 100%22%3E%3Crect width=%22100%22 height=%22100%22 fill=%22%23333%22/%3E%3Ctext x=%2250%22 y=%2250%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23fff%22%3ENo Image%3C/text%3E%3C/svg%3E'">
+                        <img src="${imagePath}" style="max-width:90%;max-height:75%;object-fit:contain;border-radius:10px;" onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22100%22 height=%22100%22%3E%3Crect width=%22100%22 height=%22100%22 fill=%22%23333%22/%3E%3Ctext x=%2250%22 y=%2250%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23fff%22%3ENo Image%3C/text%3E%3C/svg%3E'">
                         <div style="color:white;margin-top:20px;">📸 Slideshow Preview<br>${slides.length} slide(s) | ${formatDurationPreview(content.display_duration)}</div>
                     </div>`;
             } else if (content.content_type === 'youtube') {
@@ -736,21 +924,95 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
                 };
                 previewDiv.innerHTML = `
                     <div style="width:100%;height:100%;display:flex;justify-content:center;align-items:center;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);">
-                        <div style="background:rgba(255,255,255,0.9);border-radius:20px;padding:30px;text-align:center;">
+                        <div style="background:rgba(255,255,255,0.9);border-radius:20px;padding:30px;text-align:center;max-width:80%;">
                             <div style="font-size:64px;">${icons[content.message_type] || '📝'}</div>
                             <div style="margin-top:20px;font-weight:bold;">${escapeHtml(content.content_data)}</div>
                             <div style="margin-top:10px;font-size:12px;">Duration: ${formatDurationPreview(content.display_duration)}</div>
                         </div>
                     </div>`;
             } else if (content.content_type === 'ppt') {
+                const pdfUrl = content.content_data;
                 previewDiv.innerHTML = `
-                    <div style="width:100%;height:100%;display:flex;flex-direction:column;justify-content:center;align-items:center;background:#000;">
-                        <div style="font-size:64px;">📄</div>
-                        <div style="color:white;margin-top:20px;font-weight:bold;">PDF Document</div>
-                        <div style="color:#aaa;">Duration: ${formatDurationPreview(content.display_duration)}</div>
+                    <div style="width:100%;height:100%;background:#1a1a2e;display:flex;flex-direction:column;">
+                        <div style="padding:12px;background:#16213e;color:white;text-align:center;font-size:13px;display:flex;justify-content:space-between;align-items:center;">
+                            <span>📄 PDF Preview</span>
+                            <div style="display:flex;gap:10px;">
+                                <button onclick="pdfPrevPage()" id="pdfPrevBtn" style="background:#667eea;color:white;border:none;border-radius:5px;padding:4px 10px;cursor:pointer;">◀ Prev</button>
+                                <span id="pdfPageInfo">Page 1 / ?</span>
+                                <button onclick="pdfNextPage()" id="pdfNextBtn" style="background:#667eea;color:white;border:none;border-radius:5px;padding:4px 10px;cursor:pointer;">Next ▶</button>
+                            </div>
+                            <span style="font-size:11px;">${formatDurationPreview(content.display_duration)}</span>
+                        </div>
+                        <div id="pdfCanvasContainer" style="flex:1;display:flex;align-items:center;justify-content:center;overflow:hidden;padding:10px;">
+                            <canvas id="pdfCanvas" style="max-width:100%;max-height:100%;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,0.5);"></canvas>
+                        </div>
+                        <div id="pdfLoading" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#1a1a2e;color:white;gap:12px;">
+                            <div style="font-size:40px;">📄</div>
+                            <div>Loading PDF...</div>
+                        </div>
                     </div>`;
+                renderPdfPreview(pdfUrl);
+            } else {
+                previewDiv.innerHTML = `<div class="preview-placeholder"><div class="preview-placeholder-icon">📄</div><div>Preview not available</div></div>`;
             }
         }
+
+        function renderPdfPreview(pdfUrl) {
+            pdfDoc = null;
+            currentPdfPage = 1;
+            const loading = document.getElementById('pdfLoading');
+            if (loading) loading.style.display = 'flex';
+
+            pdfjsLib.getDocument(pdfUrl).promise.then(pdf => {
+                pdfDoc = pdf;
+                const info = document.getElementById('pdfPageInfo');
+                if (info) info.textContent = `Page 1 / ${pdf.numPages}`;
+                const loadingDiv = document.getElementById('pdfLoading');
+                if (loadingDiv) loadingDiv.style.display = 'none';
+                renderPdfPage(1);
+            }).catch(err => {
+                const loadingDiv = document.getElementById('pdfLoading');
+                if (loadingDiv) loadingDiv.innerHTML = `<div style="font-size:40px;">⚠️</div><div>Failed to load PDF</div><div style="font-size:11px;">${err.message}</div>`;
+            });
+        }
+
+        function renderPdfPage(pageNum) {
+            if (!pdfDoc) return;
+            pdfDoc.getPage(pageNum).then(page => {
+                const canvas = document.getElementById('pdfCanvas');
+                if (!canvas) return;
+                const container = document.getElementById('pdfCanvasContainer');
+                const maxW = (container ? container.clientWidth : 800) - 20;
+                const maxH = (container ? container.clientHeight : 500) - 20;
+                const viewport = page.getViewport({
+                    scale: 1
+                });
+                const scale = Math.min(maxW / viewport.width, maxH / viewport.height, 2);
+                const scaledViewport = page.getViewport({
+                    scale: Math.max(scale, 0.5)
+                });
+                canvas.width = scaledViewport.width;
+                canvas.height = scaledViewport.height;
+                page.render({
+                    canvasContext: canvas.getContext('2d'),
+                    viewport: scaledViewport
+                });
+                const info = document.getElementById('pdfPageInfo');
+                if (info) info.textContent = `Page ${pageNum} / ${pdfDoc.numPages}`;
+                currentPdfPage = pageNum;
+            });
+        }
+
+        function pdfPrevPage() {
+            if (pdfDoc && currentPdfPage > 1) renderPdfPage(currentPdfPage - 1);
+        }
+
+        function pdfNextPage() {
+            if (pdfDoc && currentPdfPage < pdfDoc.numPages) renderPdfPage(currentPdfPage + 1);
+        }
+
+        window.pdfPrevPage = pdfPrevPage;
+        window.pdfNextPage = pdfNextPage;
 
         function formatDurationPreview(seconds) {
             if (seconds < 60) return seconds + ' seconds';
@@ -778,27 +1040,24 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
         }
 
         function saveOrder() {
-            if (confirm('Save this display order? ALL content will be activated and play in sequence.')) {
-                const items = document.querySelectorAll('.order-item');
-                const orderData = [];
-                items.forEach((item, idx) => orderData.push({
-                    id: parseInt(item.getAttribute('data-id'))
-                }));
-                const form = document.createElement('form');
-                form.method = 'POST';
-                const input = document.createElement('input');
-                input.type = 'hidden';
-                input.name = 'order_data';
-                input.value = JSON.stringify(orderData);
-                form.appendChild(input);
-                const saveInput = document.createElement('input');
-                saveInput.type = 'hidden';
-                saveInput.name = 'save_order';
-                saveInput.value = '1';
-                form.appendChild(saveInput);
-                document.body.appendChild(form);
-                form.submit();
-            }
+            const items = document.querySelectorAll('.order-item');
+            const orderData = Array.from(items).map(item => ({
+                id: parseInt(item.getAttribute('data-id'))
+            }));
+            const form = document.createElement('form');
+            form.method = 'POST';
+            const input = document.createElement('input');
+            input.type = 'hidden';
+            input.name = 'order_data';
+            input.value = JSON.stringify(orderData);
+            form.appendChild(input);
+            const saveInput = document.createElement('input');
+            saveInput.type = 'hidden';
+            saveInput.name = 'save_order';
+            saveInput.value = '1';
+            form.appendChild(saveInput);
+            document.body.appendChild(form);
+            form.submit();
         }
 
         function editDuration(id, currentDuration) {
@@ -820,19 +1079,17 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
             document.getElementById('editModal').classList.add('active');
         }
 
-        function deleteContent(id) {
-            if (confirm('⚠️ Delete this content? Cannot be undone!')) window.location.href = `?delete_id=${id}`;
-        }
-
-        function closeModal() {
+        function closeEditModal() {
             document.getElementById('editModal').classList.remove('active');
         }
 
         document.addEventListener('DOMContentLoaded', () => {
             initDragAndDrop();
-            document.getElementById('saveOrderBtn').addEventListener('click', saveOrder);
+            document.getElementById('saveOrderBtn').addEventListener('click', () => {
+                showConfirmModal('💾 Save Display Order', 'Save this display order? The TV will update immediately.', '📋', saveOrder);
+            });
             document.getElementById('editModal').addEventListener('click', e => {
-                if (e.target === e.currentTarget) closeModal();
+                if (e.target === e.currentTarget) closeEditModal();
             });
             const firstItem = document.querySelector('.order-item');
             if (firstItem) selectItem(firstItem);
