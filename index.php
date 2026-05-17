@@ -120,6 +120,7 @@ if ($version) $current_version = $version['version'];
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <title>ET TV Display - <?php echo strtoupper($current_mode); ?></title>
+    <link rel="icon" type="image/png" href="/img/ethiopian_logo.ico">
     <style>
         * {
             margin: 0;
@@ -570,6 +571,21 @@ if ($version) $current_version = $version['version'];
             const wrapper = document.getElementById('contentWrapper');
             clearAllTimeouts();
 
+            console.log('Loading content type:', currentContent.content_type);
+
+            if (!currentContent || !currentContent.content_type) {
+                console.error('Invalid content structure');
+                // Show mode-specific message when no content
+                wrapper.innerHTML = `
+            <div class="message-container">
+                <div class="message-card memo">
+                    <div class="message-icon">📺</div>
+                    <div class="message-text">No content available for ${currentMode.toUpperCase()} mode.<br>Please check back later.</div>
+                </div>
+            </div>
+        `;
+                return;
+            }
             console.log('Loading content type:', currentContent.content_type);
 
             if (!currentContent || !currentContent.content_type) {

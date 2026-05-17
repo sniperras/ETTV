@@ -257,6 +257,7 @@ $all_content = $stmt->fetchAll();
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>LMT Admin Panel - ET TV</title>
+    <link rel="icon" type="image/png" href="../img/ethiopian_logo.ico">
     <style>
         * {
             margin: 0;
