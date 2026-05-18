@@ -14,7 +14,6 @@ try {
 }
 
 // Handle save order
-// Handle save order
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_order'])) {
     try {
         $order_data = json_decode($_POST['order_data'], true);
@@ -22,17 +21,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_order'])) {
         if ($order_data && is_array($order_data)) {
             $pdo->beginTransaction();
 
-            // Update display_order for all items
             foreach ($order_data as $index => $item) {
                 $stmt = $pdo->prepare("UPDATE content SET display_order = ? WHERE id = ? AND admin_role = 'lmt'");
                 $stmt->execute([$index, $item['id']]);
             }
 
-            // Reset next_content_id
             $stmt = $pdo->prepare("UPDATE content SET next_content_id = NULL WHERE admin_role = 'lmt'");
             $stmt->execute();
 
-            // Build new chain based on display_order and active status
             $active_items = [];
             foreach ($order_data as $item) {
                 $stmt = $pdo->prepare("SELECT is_active FROM content WHERE id = ?");
@@ -43,13 +39,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_order'])) {
                 }
             }
 
-            // Update next_content_id chain
             for ($i = 0; $i < count($active_items) - 1; $i++) {
                 $stmt = $pdo->prepare("UPDATE content SET next_content_id = ? WHERE id = ?");
                 $stmt->execute([$active_items[$i + 1], $active_items[$i]]);
             }
 
-            // Increment version to trigger TV refresh
             $stmt = $pdo->prepare("UPDATE content_version SET version = version + 1, last_update = NOW() WHERE admin_role = 'lmt'");
             $stmt->execute();
 
@@ -61,8 +55,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_order'])) {
         $_SESSION['flash_error'] = "Error: " . $e->getMessage();
     }
 
-    // Redirect to the order page WITHOUT any content ID parameter
-    // This ensures the index page shows the first content in the new order
     header('Location: lmtadmin_order.php');
     exit();
 }
@@ -203,11 +195,12 @@ function getLayoutType($content_type, $content_data)
 {
     if ($content_type !== 'slideshow') return null;
     $data = json_decode($content_data, true);
-    if ($data && isset($data['type']) && $data['type'] !== 'slideshow') {
+    if ($data && isset($data['type'])) {
         return $data['type'];
     }
     return 'slideshow';
 }
+
 function getLayoutIcon($layout_type)
 {
     switch ($layout_type) {
@@ -220,6 +213,15 @@ function getLayoutIcon($layout_type)
         default:
             return '🎞️ Slideshow';
     }
+}
+
+function getAudioTitle($content_data)
+{
+    $data = json_decode($content_data, true);
+    if ($data && isset($data['title']) && !empty($data['title'])) {
+        return $data['title'];
+    }
+    return 'Audio';
 }
 
 $stmt = $pdo->prepare("SELECT * FROM content WHERE admin_role = 'lmt' ORDER BY COALESCE(display_order, 999999) ASC, id ASC");
@@ -740,6 +742,113 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
             text-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
             pointer-events: none;
         }
+
+        /* Audio Preview Styles */
+        .audio-preview-container {
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .audio-preview-icon {
+            font-size: 80px;
+            margin-bottom: 20px;
+            animation: pulse 2s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+
+            0%,
+            100% {
+                transform: scale(1);
+                opacity: 0.7;
+            }
+
+            50% {
+                transform: scale(1.1);
+                opacity: 1;
+            }
+        }
+
+        .audio-preview-title {
+            font-size: 24px;
+            color: white;
+            margin-bottom: 20px;
+            text-align: center;
+            max-width: 80%;
+        }
+
+        .audio-wave-bars {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            margin-top: 20px;
+        }
+
+        .audio-wave-bar-preview {
+            width: 6px;
+            height: 30px;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            border-radius: 3px;
+            animation: wavePreview 1s ease-in-out infinite;
+        }
+
+        .audio-wave-bar-preview:nth-child(1) {
+            animation-delay: 0s;
+            height: 20px;
+        }
+
+        .audio-wave-bar-preview:nth-child(2) {
+            animation-delay: 0.1s;
+            height: 40px;
+        }
+
+        .audio-wave-bar-preview:nth-child(3) {
+            animation-delay: 0.2s;
+            height: 60px;
+        }
+
+        .audio-wave-bar-preview:nth-child(4) {
+            animation-delay: 0.3s;
+            height: 50px;
+        }
+
+        .audio-wave-bar-preview:nth-child(5) {
+            animation-delay: 0.4s;
+            height: 70px;
+        }
+
+        .audio-wave-bar-preview:nth-child(6) {
+            animation-delay: 0.5s;
+            height: 45px;
+        }
+
+        .audio-wave-bar-preview:nth-child(7) {
+            animation-delay: 0.6s;
+            height: 30px;
+        }
+
+        .audio-wave-bar-preview:nth-child(8) {
+            animation-delay: 0.7s;
+            height: 55px;
+        }
+
+        @keyframes wavePreview {
+
+            0%,
+            100% {
+                transform: scaleY(1);
+            }
+
+            50% {
+                transform: scaleY(0.5);
+            }
+        }
     </style>
 </head>
 
@@ -786,6 +895,7 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
                     <?php foreach ($contents as $index => $content):
                         $layout_type = getLayoutType($content['content_type'], $content['content_data']);
                         $layout_icon = getLayoutIcon($layout_type);
+                        $audio_title = ($content['content_type'] === 'local_audio') ? getAudioTitle($content['content_data']) : '';
                     ?>
                         <div class="order-item <?php echo $content['is_active'] ? '' : 'inactive'; ?>" data-id="<?php echo $content['id']; ?>">
                             <div class="order-item-content">
@@ -796,20 +906,33 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
                                     elseif ($content['content_type'] === 'youtube') echo '▶️';
                                     elseif ($content['content_type'] === 'message') echo '💬';
                                     elseif ($content['content_type'] === 'local_video') echo '🎬';
+                                    elseif ($content['content_type'] === 'local_audio') echo '🎵';
                                     else echo '📕';
                                     ?>
                                 </div>
                                 <div class="item-info">
                                     <div class="item-title">
-                                        #<?php echo $index + 1; ?> - <?php echo ucfirst($content['content_type']); ?>
+                                        #<?php echo $index + 1; ?> -
+                                        <?php
+                                        if ($content['content_type'] === 'local_audio') {
+                                            echo '🎵 Audio';
+                                        } else {
+                                            echo ucfirst($content['content_type']);
+                                        }
+                                        ?>
                                         <?php if ($content['content_type'] === 'slideshow' && $layout_type !== 'slideshow'): ?>
                                             <span class="badge"><?php echo $layout_icon; ?></span>
                                         <?php endif; ?>
                                     </div>
-                                    <?php if (!empty($content['description']) && ($content['content_type'] === 'slideshow' || $content['content_type'] === 'ppt')): ?>
+                                    <?php if (!empty($content['description'])): ?>
                                         <div class="item-description">
                                             📝 <?php echo htmlspecialchars(substr($content['description'], 0, 80)); ?>
                                             <?php if (strlen($content['description']) > 80): ?>...<?php endif; ?>
+                                        </div>
+                                    <?php endif; ?>
+                                    <?php if ($content['content_type'] === 'local_audio' && !empty($audio_title)): ?>
+                                        <div class="item-description">
+                                            🎵 Title: <?php echo htmlspecialchars($audio_title); ?>
                                         </div>
                                     <?php endif; ?>
                                     <div class="item-details">
@@ -1004,8 +1127,43 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
             const previewDiv = document.getElementById('previewContent');
             if (currentPreviewInterval) clearInterval(currentPreviewInterval);
 
+            // Handle Audio Preview
+            if (content.content_type === 'local_audio') {
+                let audioData;
+                let audioTitle = 'Audio Content';
+                try {
+                    audioData = JSON.parse(content.content_data);
+                    if (audioData && audioData.title && audioData.title !== '') {
+                        audioTitle = audioData.title;
+                    } else if (content.description && content.description !== '') {
+                        audioTitle = content.description;
+                    }
+                } catch (e) {
+                    audioTitle = content.description || 'Audio Content';
+                }
+
+                previewDiv.innerHTML = `
+                    <div class="audio-preview-container">
+                        <div class="audio-preview-icon">🎵</div>
+                        <div class="audio-preview-title">${escapeHtml(audioTitle)}</div>
+                        <div class="audio-wave-bars">
+                            <div class="audio-wave-bar-preview"></div>
+                            <div class="audio-wave-bar-preview"></div>
+                            <div class="audio-wave-bar-preview"></div>
+                            <div class="audio-wave-bar-preview"></div>
+                            <div class="audio-wave-bar-preview"></div>
+                            <div class="audio-wave-bar-preview"></div>
+                            <div class="audio-wave-bar-preview"></div>
+                            <div class="audio-wave-bar-preview"></div>
+                        </div>
+                        <div style="color: white; margin-top: 20px; font-size: 14px;">
+                            ⏱️ Duration: ${formatDurationPreview(content.display_duration)}
+                        </div>
+                    </div>
+                `;
+            }
             // Handle Local Video - Show thumbnail from video file
-            if (content.content_type === 'local_video') {
+            else if (content.content_type === 'local_video') {
                 let videoData;
                 try {
                     videoData = JSON.parse(content.content_data);
@@ -1019,7 +1177,6 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
                 if (!videoPath.startsWith('/')) videoPath = '/' + videoPath;
                 videoPath = videoPath.replace('uploads/uploads/', 'uploads/');
 
-                // Use the video file directly - browser will show first frame as thumbnail
                 previewDiv.innerHTML = `
                     <div class="video-preview-container">
                         <video id="previewVideo" 
@@ -1037,7 +1194,6 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
                 if (previewVideo) {
                     previewVideo.load();
                     previewVideo.addEventListener('loadeddata', function() {
-                        // Seek to 0.1 seconds to show a frame (not black)
                         this.currentTime = 0.1;
                     });
                 }
@@ -1071,7 +1227,6 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
 
                 // MULTI-IMAGE LAYOUTS (2-image, 3-image, 4-image)
                 if (layoutType === '2-image' || layoutType === '3-image' || layoutType === '4-image') {
-                    // Determine grid dimensions
                     let cols, rows, label;
                     if (layoutType === '4-image') {
                         cols = 2;
@@ -1087,11 +1242,9 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
                         label = '2 Images Side by Side';
                     }
 
-                    // Get the images for this layout
                     const maxImages = layoutType === '4-image' ? 4 : (layoutType === '3-image' ? 3 : 2);
                     const displaySlides = allSlides.slice(0, maxImages);
 
-                    // Build HTML for each image
                     let imagesHtml = '';
                     for (let i = 0; i < maxImages; i++) {
                         if (i < displaySlides.length) {
@@ -1130,7 +1283,6 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
                 else {
                     let currentSlide = 0;
 
-                    // Create dot indicators
                     const dots = allSlides.map((_, i) =>
                         `<span id="dot-${i}" style="display:inline-block;width:10px;height:10px;border-radius:50%;
                  background:${i === 0 ? '#fff' : 'rgba(255,255,255,0.4)'};margin:0 4px;transition:background 0.3s;"></span>`
@@ -1149,7 +1301,6 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
                     <div style="margin-top:10px;">${dots}</div>
                 </div>`;
 
-                    // Auto-rotate slides if more than one
                     if (allSlides.length > 1) {
                         currentPreviewInterval = setInterval(() => {
                             const img = document.getElementById('slideShowImg');
@@ -1327,20 +1478,16 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
             document.getElementById('previewContent').innerHTML = `<div class="preview-placeholder"><div class="preview-placeholder-icon">⚠️</div><div>${msg || 'Preview not available'}</div></div>`;
         }
 
-        // Replace the submitOrder and saveOrder functions in lmtadmin_order.php with these:
-
         function submitOrder() {
             const items = document.querySelectorAll('.order-item');
-            // Get the order based on current DOM positions
             const orderData = Array.from(items).map((item, index) => ({
                 id: parseInt(item.getAttribute('data-id')),
                 order: index
             }));
 
-            // Create form and submit
             const form = document.createElement('form');
             form.method = 'POST';
-            form.action = ''; // Submit to same page
+            form.action = '';
 
             const orderInput = document.createElement('input');
             orderInput.type = 'hidden';
@@ -1359,7 +1506,6 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
         }
 
         function saveOrder() {
-            // Get current order for confirmation message
             const items = document.querySelectorAll('.order-item');
             let orderList = '';
             items.forEach((item, idx) => {
@@ -1394,7 +1540,6 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
             document.getElementById('editModal').classList.add('active');
         }
 
-        // Event delegation for PDF navigation buttons
         document.addEventListener('click', function(e) {
             if (e.target.id === 'pdfPrevBtn') pdfPrevPage();
             if (e.target.id === 'pdfNextBtn') pdfNextPage();
