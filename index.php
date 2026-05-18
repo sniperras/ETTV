@@ -263,6 +263,190 @@ if ($version) $current_version = $version['version'];
             object-fit: contain;
         }
 
+        /* Audio Player Styles */
+        .audio-container {
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+        }
+
+        .audio-waveform {
+            width: 90%;
+            max-width: 1200px;
+            height: 200px;
+            margin: 20px auto;
+            position: relative;
+        }
+
+        .audio-waveform canvas {
+            width: 100%;
+            height: 100%;
+            border-radius: 20px;
+            background: rgba(0, 0, 0, 0.3);
+            backdrop-filter: blur(10px);
+        }
+
+        .audio-controls {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 30px;
+            margin: 30px 0;
+        }
+
+        .audio-play-btn {
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border: none;
+            cursor: pointer;
+            font-size: 36px;
+            color: white;
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+        }
+
+        .audio-play-btn:hover {
+            transform: scale(1.05);
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        .audio-info {
+            text-align: center;
+            color: white;
+        }
+
+        .audio-title {
+            font-size: 32px;
+            font-weight: 600;
+            margin-bottom: 10px;
+            text-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+        }
+
+        .audio-time {
+            font-size: 18px;
+            opacity: 0.8;
+            font-family: monospace;
+        }
+
+        .audio-progress-bar {
+            width: 60%;
+            max-width: 600px;
+            height: 6px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 10px;
+            margin: 20px auto;
+            cursor: pointer;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .audio-progress-fill {
+            width: 0%;
+            height: 100%;
+            background: linear-gradient(90deg, #667eea, #764ba2);
+            border-radius: 10px;
+            transition: width 0.1s linear;
+            position: relative;
+        }
+
+        .audio-progress-fill::after {
+            content: '';
+            position: absolute;
+            right: 0;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 12px;
+            height: 12px;
+            background: white;
+            border-radius: 50%;
+            box-shadow: 0 0 10px rgba(102, 126, 234, 0.8);
+        }
+
+        .audio-wave-animation {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            margin: 20px 0;
+        }
+
+        .audio-wave-bar {
+            width: 8px;
+            height: 30px;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            border-radius: 4px;
+            animation: wave 1s ease-in-out infinite;
+        }
+
+        .audio-wave-bar:nth-child(1) {
+            animation-delay: 0s;
+            height: 20px;
+        }
+
+        .audio-wave-bar:nth-child(2) {
+            animation-delay: 0.1s;
+            height: 40px;
+        }
+
+        .audio-wave-bar:nth-child(3) {
+            animation-delay: 0.2s;
+            height: 60px;
+        }
+
+        .audio-wave-bar:nth-child(4) {
+            animation-delay: 0.3s;
+            height: 50px;
+        }
+
+        .audio-wave-bar:nth-child(5) {
+            animation-delay: 0.4s;
+            height: 70px;
+        }
+
+        .audio-wave-bar:nth-child(6) {
+            animation-delay: 0.5s;
+            height: 45px;
+        }
+
+        .audio-wave-bar:nth-child(7) {
+            animation-delay: 0.6s;
+            height: 30px;
+        }
+
+        .audio-wave-bar:nth-child(8) {
+            animation-delay: 0.7s;
+            height: 55px;
+        }
+
+        .audio-wave-bar:nth-child(9) {
+            animation-delay: 0.8s;
+            height: 35px;
+        }
+
+        .audio-wave-bar:nth-child(10) {
+            animation-delay: 0.9s;
+            height: 25px;
+        }
+
+        @keyframes wave {
+
+            0%,
+            100% {
+                transform: scaleY(1);
+            }
+
+            50% {
+                transform: scaleY(0.5);
+            }
+        }
+
         .pdf-container {
             width: 100%;
             height: 100%;
@@ -461,6 +645,14 @@ if ($version) $current_version = $version['version'];
                 font-size: 16px;
                 padding: 12px 20px;
             }
+
+            .audio-title {
+                font-size: 24px;
+            }
+
+            .audio-waveform {
+                height: 150px;
+            }
         }
 
         @media (max-width: 768px) {
@@ -527,6 +719,14 @@ if ($version) $current_version = $version['version'];
         let totalPages = 0;
         let pdfRotationInterval = null;
 
+        // Audio variables
+        let currentAudio = null;
+        let audioContext = null;
+        let audioSource = null;
+        let audioAnalyser = null;
+        let animationId = null;
+        let isPlaying = false;
+
         function clearAllTimeouts() {
             currentTimeouts.forEach(timeout => clearTimeout(timeout));
             currentTimeouts = [];
@@ -537,6 +737,19 @@ if ($version) $current_version = $version['version'];
             if (pdfRotationInterval) {
                 clearInterval(pdfRotationInterval);
                 pdfRotationInterval = null;
+            }
+            // Clean up audio
+            if (currentAudio) {
+                currentAudio.pause();
+                currentAudio = null;
+            }
+            if (animationId) {
+                cancelAnimationFrame(animationId);
+                animationId = null;
+            }
+            if (audioContext) {
+                audioContext.close();
+                audioContext = null;
             }
         }
 
@@ -581,7 +794,6 @@ if ($version) $current_version = $version['version'];
         function loadContent() {
             const wrapper = document.getElementById('contentWrapper');
             clearAllTimeouts();
-            localVideoUnlockAttempts = 0;
 
             if (!currentContent || !currentContent.content_type) {
                 wrapper.innerHTML = `
@@ -631,6 +843,8 @@ if ($version) $current_version = $version['version'];
                 loadYouTube();
             } else if (currentContent.content_type === 'local_video') {
                 loadLocalVideo();
+            } else if (currentContent.content_type === 'local_audio') {
+                loadAudio();
             } else if (currentContent.content_type === 'message') {
                 loadMessage();
             } else if (currentContent.content_type === 'ppt') {
@@ -638,6 +852,240 @@ if ($version) $current_version = $version['version'];
             } else {
                 loadMessage();
             }
+        }
+
+        function loadAudio() {
+            const wrapper = document.getElementById('contentWrapper');
+            let audioData;
+
+            try {
+                audioData = typeof currentContent.content_data === 'string' ? JSON.parse(currentContent.content_data) : currentContent.content_data;
+            } catch (e) {
+                audioData = {
+                    file_path: currentContent.content_data
+                };
+            }
+
+            let audioPath = audioData.file_path || audioData.path;
+            if (!audioPath) {
+                loadMessage();
+                return;
+            }
+
+            audioPath = audioPath.replace(/^\/+/, '');
+            if (!audioPath.startsWith('uploads/') && !audioPath.startsWith('audio/')) {
+                audioPath = 'uploads/audio/' + audioPath.replace(/^uploads\/?/, '');
+            }
+
+            const audioTitle = audioData.title || 'Background Audio';
+            const showWaveform = audioData.show_waveform !== undefined ? audioData.show_waveform : true;
+
+            wrapper.innerHTML = `
+                <div class="audio-container">
+                    <div class="audio-info">
+                        <div class="audio-title">🎵 ${escapeHtml(audioTitle)}</div>
+                    </div>
+                    ${showWaveform ? `
+                    <div class="audio-waveform">
+                        <canvas id="audioWaveformCanvas"></canvas>
+                    </div>
+                    <div class="audio-wave-animation">
+                        <div class="audio-wave-bar"></div>
+                        <div class="audio-wave-bar"></div>
+                        <div class="audio-wave-bar"></div>
+                        <div class="audio-wave-bar"></div>
+                        <div class="audio-wave-bar"></div>
+                        <div class="audio-wave-bar"></div>
+                        <div class="audio-wave-bar"></div>
+                        <div class="audio-wave-bar"></div>
+                        <div class="audio-wave-bar"></div>
+                        <div class="audio-wave-bar"></div>
+                    </div>
+                    ` : ''}
+                    <div class="audio-controls">
+                        <button class="audio-play-btn" id="audioPlayBtn">🔊</button>
+                    </div>
+                    <div class="audio-progress-bar" id="audioProgressBar">
+                        <div class="audio-progress-fill" id="audioProgressFill"></div>
+                    </div>
+                    <div class="audio-time">
+                        <span id="audioCurrentTime">0:00</span> / <span id="audioDuration">0:00</span>
+                    </div>
+                </div>
+            `;
+
+            const audio = new Audio('/' + audioPath);
+            currentAudio = audio;
+            audio.loop = true;
+            audio.volume = 1.0;
+
+            // Set up event listeners
+            audio.addEventListener('loadedmetadata', function() {
+                const duration = formatTime(audio.duration);
+                document.getElementById('audioDuration').textContent = duration;
+            });
+
+            audio.addEventListener('timeupdate', function() {
+                const currentTime = formatTime(audio.currentTime);
+                document.getElementById('audioCurrentTime').textContent = currentTime;
+                const progress = (audio.currentTime / audio.duration) * 100;
+                document.getElementById('audioProgressFill').style.width = progress + '%';
+            });
+
+            audio.addEventListener('ended', function() {
+                // Loop manually if needed
+                if (audio.loop) {
+                    audio.currentTime = 0;
+                    audio.play();
+                }
+            });
+
+            // Play button
+            const playBtn = document.getElementById('audioPlayBtn');
+            playBtn.addEventListener('click', function() {
+                if (audio.paused) {
+                    audio.play().catch(e => console.log('Play error:', e));
+                    playBtn.textContent = '⏸';
+                    isPlaying = true;
+                    if (showWaveform) startWaveformVisualization();
+                } else {
+                    audio.pause();
+                    playBtn.textContent = '🔊';
+                    isPlaying = false;
+                    if (animationId) {
+                        cancelAnimationFrame(animationId);
+                        animationId = null;
+                    }
+                }
+            });
+
+            // Progress bar click
+            const progressBar = document.getElementById('audioProgressBar');
+            progressBar.addEventListener('click', function(e) {
+                const rect = progressBar.getBoundingClientRect();
+                const pos = (e.clientX - rect.left) / rect.width;
+                audio.currentTime = pos * audio.duration;
+            });
+
+            // Auto-start playing
+            audio.play().then(() => {
+                playBtn.textContent = '⏸';
+                isPlaying = true;
+                if (showWaveform) startWaveformVisualization();
+            }).catch(e => {
+                console.log('Autoplay prevented, waiting for user interaction');
+                playBtn.textContent = '🔊';
+                isPlaying = false;
+            });
+
+            if (showWaveform) {
+                generateFakeWaveform();
+            }
+
+            // Set timeout to move to next content after display_duration
+            if (currentContent.display_duration && currentContent.display_duration > 0) {
+                const overallTimeoutId = setTimeout(() => {
+                    if (currentAudio) {
+                        currentAudio.pause();
+                    }
+                    loadNextContent();
+                }, currentContent.display_duration * 1000);
+                currentTimeouts.push(overallTimeoutId);
+            }
+        }
+
+        function generateFakeWaveform() {
+            const canvas = document.getElementById('audioWaveformCanvas');
+            if (!canvas) return;
+
+            const ctx = canvas.getContext('2d');
+            const width = canvas.clientWidth;
+            const height = canvas.clientHeight;
+
+            canvas.width = width;
+            canvas.height = height;
+
+            const barCount = 80;
+            const barWidth = width / barCount;
+
+            function draw() {
+                ctx.clearRect(0, 0, width, height);
+                ctx.fillStyle = 'rgba(102, 126, 234, 0.3)';
+
+                for (let i = 0; i < barCount; i++) {
+                    const barHeight = 20 + Math.random() * (height - 40);
+                    const x = i * barWidth;
+                    const y = (height - barHeight) / 2;
+
+                    ctx.fillRect(x, y, barWidth - 2, barHeight);
+                }
+
+                requestAnimationFrame(draw);
+            }
+
+            draw();
+        }
+
+        function startWaveformVisualization() {
+            if (!audioContext) {
+                audioContext = new(window.AudioContext || window.webkitAudioContext)();
+                audioSource = audioContext.createMediaElementSource(currentAudio);
+                audioAnalyser = audioContext.createAnalyser();
+                audioSource.connect(audioAnalyser);
+                audioAnalyser.connect(audioContext.destination);
+                audioAnalyser.fftSize = 256;
+            }
+
+            if (audioContext.state === 'suspended') {
+                audioContext.resume();
+            }
+
+            const canvas = document.getElementById('audioWaveformCanvas');
+            if (!canvas) return;
+
+            const ctx = canvas.getContext('2d');
+            const width = canvas.clientWidth;
+            const height = canvas.clientHeight;
+            canvas.width = width;
+            canvas.height = height;
+
+            const bufferLength = audioAnalyser.frequencyBinCount;
+            const dataArray = new Uint8Array(bufferLength);
+
+            function drawWaveform() {
+                if (!isPlaying) return;
+
+                animationId = requestAnimationFrame(drawWaveform);
+                audioAnalyser.getByteFrequencyData(dataArray);
+
+                ctx.clearRect(0, 0, width, height);
+
+                const barCount = 60;
+                const barWidth = width / barCount;
+
+                for (let i = 0; i < barCount; i++) {
+                    const value = dataArray[i] || 0;
+                    const barHeight = (value / 255) * height;
+                    const x = i * barWidth;
+                    const y = (height - barHeight) / 2;
+
+                    const gradient = ctx.createLinearGradient(x, y, x, y + barHeight);
+                    gradient.addColorStop(0, '#667eea');
+                    gradient.addColorStop(1, '#764ba2');
+
+                    ctx.fillStyle = gradient;
+                    ctx.fillRect(x, y, barWidth - 2, barHeight);
+                }
+            }
+
+            drawWaveform();
+        }
+
+        function formatTime(seconds) {
+            if (isNaN(seconds)) return '0:00';
+            const mins = Math.floor(seconds / 60);
+            const secs = Math.floor(seconds % 60);
+            return `${mins}:${secs.toString().padStart(2, '0')}`;
         }
 
         function loadSlideshow() {

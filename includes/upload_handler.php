@@ -1,6 +1,6 @@
 <?php
-// includes/upload_handler.php - Updated with MP4 video support
-function validateAndUploadFile($file, $upload_dir, $allowed_types = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'mp4'])
+// includes/upload_handler.php - Updated with audio support
+function validateAndUploadFile($file, $upload_dir, $allowed_types = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'mp4', 'pdf', 'mp3', 'wav', 'ogg', 'm4a'])
 {
     // Check for upload errors
     if ($file['error'] !== UPLOAD_ERR_OK) {
@@ -11,7 +11,9 @@ function validateAndUploadFile($file, $upload_dir, $allowed_types = ['jpg', 'jpe
     $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
 
     // Set max size based on file type
-    if ($ext === 'mp4') {
+    if (in_array($ext, ['mp3', 'wav', 'ogg', 'm4a'])) {
+        $max_size = 50 * 1024 * 1024; // 50MB for audio
+    } elseif ($ext === 'mp4') {
         $max_size = 100 * 1024 * 1024; // 100MB for videos
     } elseif ($ext === 'pdf') {
         $max_size = 50 * 1024 * 1024; // 50MB for PDFs
@@ -40,10 +42,14 @@ function validateAndUploadFile($file, $upload_dir, $allowed_types = ['jpg', 'jpe
         'gif' => 'image/gif',
         'bmp' => 'image/bmp',
         'mp4' => 'video/mp4',
-        'pdf' => 'application/pdf'
+        'pdf' => 'application/pdf',
+        'mp3' => 'audio/mpeg',
+        'wav' => 'audio/wav',
+        'ogg' => 'audio/ogg',
+        'm4a' => 'audio/mp4'
     ];
 
-    // Special handling for PDF (more permissive)
+    // Special handling for PDF
     if ($ext === 'pdf') {
         $handle = fopen($file['tmp_name'], 'r');
         $first_bytes = fread($handle, 4);
@@ -53,22 +59,27 @@ function validateAndUploadFile($file, $upload_dir, $allowed_types = ['jpg', 'jpe
             throw new Exception('Invalid PDF file. File does not appear to be a valid PDF.');
         }
     }
-    // For MP4, check if it's a valid video
+    // For MP4
     elseif ($ext === 'mp4') {
-        // Basic MP4 signature check (ftyp box)
         $handle = fopen($file['tmp_name'], 'r');
         $bytes = fread($handle, 8);
         fclose($handle);
 
-        // Check for MP4 signature (ftyp or moov)
         if (strpos($bytes, 'ftyp') === false && strpos($bytes, 'moov') === false && strpos($bytes, 'mdat') === false) {
-            // Not strict check, just warning
             error_log('Warning: Uploaded file may not be a valid MP4: ' . $file['name']);
         }
     }
-    // For images, validate MIME type strictly
-    elseif (isset($allowed_mimes[$ext]) && $allowed_mimes[$ext] !== $mime_type) {
-        throw new Exception('Invalid file content. File type does not match extension.');
+    // For images
+    elseif (in_array($ext, ['jpg', 'jpeg', 'png', 'gif', 'bmp'])) {
+        if (isset($allowed_mimes[$ext]) && $allowed_mimes[$ext] !== $mime_type) {
+            throw new Exception('Invalid file content. File type does not match extension.');
+        }
+    }
+    // For audio files, just check mime type
+    elseif (in_array($ext, ['mp3', 'wav', 'ogg', 'm4a'])) {
+        if (!in_array($mime_type, ['audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/mp4'])) {
+            error_log('Warning: Uploaded audio file may have incorrect mime type: ' . $mime_type);
+        }
     }
 
     // Generate secure filename
@@ -87,6 +98,8 @@ function validateAndUploadFile($file, $upload_dir, $allowed_types = ['jpg', 'jpe
     // Return the correct path based on file type
     if ($ext === 'mp4') {
         return 'uploads/videos/' . $filename;
+    } elseif (in_array($ext, ['mp3', 'wav', 'ogg', 'm4a'])) {
+        return 'uploads/audio/' . $filename;
     }
 
     return 'uploads/' . $filename;

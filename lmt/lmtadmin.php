@@ -26,7 +26,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $force_refresh = $make_first;
 
         // Validate content type
-        $allowed_types = ['slideshow', 'youtube', 'video_upload', 'message', 'ppt'];
+        $allowed_types = ['slideshow', 'youtube', 'video_upload', 'message', 'ppt', 'audio_upload'];
         if (!in_array($content_type, $allowed_types)) {
             throw new Exception('Invalid content type');
         }
@@ -147,6 +147,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, description, content_data, display_duration, loop_count, is_active, display_order) VALUES (?, ?, ?, ?, ?, ?, 1, ?)");
             $stmt->execute(['lmt', 'local_video', $description, $content_data, $display_duration, $loop_count, $new_display_order]);
+        } elseif ($content_type === 'audio_upload') {
+            // Handle audio file upload
+            if (!isset($_FILES['audio_file']) || $_FILES['audio_file']['error'] !== UPLOAD_ERR_OK) {
+                throw new Exception('Please upload a valid audio file');
+            }
+
+            $file = $_FILES['audio_file'];
+            $allowed_files = ['mp3', 'wav', 'ogg', 'm4a'];
+            $file_path = validateAndUploadFile($file, '../uploads/audio/', $allowed_files);
+
+            // Get audio metadata if needed (duration, etc.)
+            $audio_title = isset($_POST['audio_title']) ? htmlspecialchars($_POST['audio_title']) : '';
+            $show_waveform = isset($_POST['show_waveform']) ? 1 : 0;
+
+            $content_data = json_encode([
+                'type' => 'local_audio',
+                'file_path' => $file_path,
+                'title' => $audio_title,
+                'show_waveform' => $show_waveform
+            ]);
+
+            $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, description, content_data, display_duration, loop_count, is_active, display_order) VALUES (?, ?, ?, ?, ?, ?, 1, ?)");
+            $stmt->execute(['lmt', 'local_audio', $description, $content_data, $display_duration, $loop_count, $new_display_order]);
         } elseif ($content_type === 'message') {
             $message_text = htmlspecialchars($_POST['message_text'], ENT_QUOTES, 'UTF-8');
             $message_type = $_POST['message_type'];
@@ -363,13 +386,15 @@ $all_content = $stmt->fetchAll();
 
         .image-inputs,
         .ppt-inputs,
-        .video-upload {
+        .video-upload,
+        .audio-upload {
             display: none;
         }
 
         .image-inputs.active,
         .ppt-inputs.active,
-        .video-upload.active {
+        .video-upload.active,
+        .audio-upload.active {
             display: block;
         }
 
@@ -510,6 +535,26 @@ $all_content = $stmt->fetchAll();
             border: 1px solid #cce5ff;
         }
 
+        .audio-options {
+            margin-top: 15px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 10px;
+            border: 1px solid #e0e0e0;
+        }
+
+        .audio-options label {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            cursor: pointer;
+        }
+
+        .audio-options input[type="checkbox"] {
+            width: auto;
+            transform: scale(1.2);
+        }
+
         @media (max-width: 768px) {
             .header {
                 flex-direction: column;
@@ -557,15 +602,16 @@ $all_content = $stmt->fetchAll();
                         <option value="slideshow">🖼️ Images / Slideshow</option>
                         <option value="youtube">▶️ YouTube Video (Embed)</option>
                         <option value="video_upload">🎬 Upload MP4 Video</option>
+                        <option value="audio_upload">🎵 Upload Audio (MP3, WAV, OGG)</option>
                         <option value="message">💬 Custom Message</option>
                         <option value="ppt">📄 PDF Document</option>
                     </select>
                 </div>
 
-                <!-- Description Field - Only for Images/Slideshow and PDF -->
+                <!-- Description Field - Only for Images/Slideshow, PDF, and Audio -->
                 <div class="form-group description-field" id="descriptionField">
                     <label>📝 Description (Optional)</label>
-                    <textarea name="description" id="description" placeholder="Enter a description for this content (e.g., 'Product Launch Images', 'Annual Report PDF', etc.)" maxlength="500"></textarea>
+                    <textarea name="description" id="description" placeholder="Enter a description for this content (e.g., 'Background Music', 'Announcement', etc.)" maxlength="500"></textarea>
                     <div class="description-hint">This description will help you identify this content in the order manager</div>
                 </div>
 
@@ -593,6 +639,7 @@ $all_content = $stmt->fetchAll();
                                     if ($content['content_type'] === 'slideshow') $type_icon = '🖼️';
                                     elseif ($content['content_type'] === 'youtube') $type_icon = '▶️';
                                     elseif ($content['content_type'] === 'message') $type_icon = '💬';
+                                    elseif ($content['content_type'] === 'audio_upload') $type_icon = '🎵';
                                     else $type_icon = '📄';
                                     echo $type_icon . ' ' . ucfirst($content['content_type']);
                                     if (!empty($content['description'])) {
@@ -661,7 +708,32 @@ $all_content = $stmt->fetchAll();
                     <div class="form-group">
                         <label>🎬 Upload MP4 Video</label>
                         <input type="file" name="video_file" accept="video/mp4">
-                        <div class="info-text">Upload MP4 video file. Max 10MB due to hosting limits.</div>
+                        <div class="info-text">Upload MP4 video file. Max 100MB.</div>
+                    </div>
+                </div>
+
+                <!-- Audio Upload -->
+                <div id="audioUpload" class="audio-upload">
+                    <div class="form-group">
+                        <label>🎵 Upload Audio File</label>
+                        <input type="file" name="audio_file" accept="audio/mpeg,audio/wav,audio/ogg,audio/mp4">
+                        <div class="info-text">Supported formats: MP3, WAV, OGG, M4A (Max 50MB)</div>
+                    </div>
+
+                    <div class="audio-options">
+                        <div class="form-group">
+                            <label>🎤 Audio Title (Optional)</label>
+                            <input type="text" name="audio_title" placeholder="e.g., 'Background Music', 'Announcement', etc.">
+                            <div class="info-text">Title will be displayed on the audio player</div>
+                        </div>
+
+                        <div class="form-group">
+                            <label>
+                                <input type="checkbox" name="show_waveform" value="1" checked>
+                                🎵 Show Audio Waveform Visualization
+                            </label>
+                            <div class="info-text">Display a beautiful waveform animation while audio plays</div>
+                        </div>
                     </div>
                 </div>
 
@@ -719,6 +791,7 @@ $all_content = $stmt->fetchAll();
         const pptUpload = document.getElementById('pptUpload');
         const youtubeLink = document.getElementById('youtubeLink');
         const videoUpload = document.getElementById('videoUpload');
+        const audioUpload = document.getElementById('audioUpload');
         const customMessage = document.getElementById('customMessage');
         const loopGroup = document.getElementById('loopGroup');
         const layoutTypeGroup = document.getElementById('layoutTypeGroup');
@@ -739,7 +812,7 @@ $all_content = $stmt->fetchAll();
 
         function updateDescriptionVisibility() {
             const selectedType = contentType.value;
-            if (selectedType === 'slideshow' || selectedType === 'ppt') {
+            if (selectedType === 'slideshow' || selectedType === 'ppt' || selectedType === 'audio_upload') {
                 descriptionField.classList.add('active');
             } else {
                 descriptionField.classList.remove('active');
@@ -773,6 +846,7 @@ $all_content = $stmt->fetchAll();
             pptUpload.classList.remove('active');
             youtubeLink.classList.remove('active');
             videoUpload.classList.remove('active');
+            audioUpload.classList.remove('active');
             customMessage.classList.remove('active');
 
             updateDescriptionVisibility();
@@ -792,6 +866,10 @@ $all_content = $stmt->fetchAll();
                 loopGroup.style.display = 'block';
             } else if (this.value === 'video_upload') {
                 videoUpload.classList.add('active');
+                layoutTypeGroup.style.display = 'none';
+                loopGroup.style.display = 'none';
+            } else if (this.value === 'audio_upload') {
+                audioUpload.classList.add('active');
                 layoutTypeGroup.style.display = 'none';
                 loopGroup.style.display = 'none';
             } else if (this.value === 'message') {
@@ -884,6 +962,12 @@ $all_content = $stmt->fetchAll();
                 const videoFile = document.querySelector('input[name="video_file"]');
                 if (!videoFile || !videoFile.files.length) {
                     alert('Please upload an MP4 video file.');
+                    e.preventDefault();
+                }
+            } else if (type === 'audio_upload') {
+                const audioFile = document.querySelector('input[name="audio_file"]');
+                if (!audioFile || !audioFile.files.length) {
+                    alert('Please upload an audio file (MP3, WAV, OGG, or M4A).');
                     e.preventDefault();
                 }
             } else if (type === 'message') {
