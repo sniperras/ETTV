@@ -100,7 +100,6 @@ if ($version) $current_version = $version['version'];
     <title>ET TV Display - <?php echo strtoupper($current_mode); ?></title>
     <link rel="icon" type="image/png" href="/img/ethiopian_logo.ico">
     <style>
-        /* Your existing styles remain the same */
         * {
             margin: 0;
             padding: 0;
@@ -268,38 +267,55 @@ if ($version) $current_version = $version['version'];
             width: 100%;
             height: 100%;
             background: #000;
-            display: flex;
-            flex-direction: column;
             position: relative;
             overflow: hidden;
         }
 
-        .pdf-horizontal-grid {
-            display: flex;
-            flex-direction: row;
+        .pdf-viewer {
             width: 100%;
             height: 100%;
-            gap: 20px;
-            padding: 30px;
-            background: #0a0a0a;
-        }
-
-        .pdf-page {
-            flex: 1;
-            background: white;
-            border-radius: 16px;
-            overflow: hidden;
             display: flex;
             align-items: center;
             justify-content: center;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
-            position: relative;
+            background: #000;
         }
 
-        .pdf-page img {
+        .pdf-viewer.two-pages {
+            flex-direction: row;
+            gap: 30px;
+            padding: 40px;
+        }
+
+        .pdf-viewer.single-page {
+            flex-direction: column;
+        }
+
+        .pdf-page-wrapper {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #fff;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+            height: 100%;
+            min-height: 0;
+        }
+
+        .pdf-page-wrapper.single {
+            max-width: 90%;
+            max-height: 90%;
+            width: auto;
+            height: auto;
+            flex: none;
+        }
+
+        .pdf-page-wrapper canvas {
             width: 100%;
             height: 100%;
             object-fit: contain;
+            display: block;
         }
 
         .pdf-page-number {
@@ -315,6 +331,7 @@ if ($version) $current_version = $version['version'];
             z-index: 10;
             font-weight: 500;
             backdrop-filter: blur(10px);
+            pointer-events: none;
         }
 
         .pdf-loading {
@@ -368,35 +385,6 @@ if ($version) $current_version = $version['version'];
                 transform: translateY(0);
                 opacity: 1;
             }
-        }
-
-        .pdf-container canvas {
-            image-rendering: -webkit-optimize-contrast;
-            image-rendering: crisp-edges;
-            image-rendering: pixelated;
-        }
-
-        .pdf-page img,
-        .pdf-page canvas {
-            width: 100%;
-            height: auto;
-            image-rendering: high-quality;
-        }
-
-        /* For single page PDF */
-        .pdf-container.single-page {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            background: #000;
-        }
-
-        .pdf-container.single-page canvas {
-            max-width: 90vw;
-            max-height: 90vh;
-            object-fit: contain;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
-            border-radius: 8px;
         }
 
         .warning {
@@ -469,11 +457,6 @@ if ($version) $current_version = $version['version'];
                 font-size: 70px;
             }
 
-            .pdf-horizontal-grid {
-                gap: 12px;
-                padding: 15px;
-            }
-
             .description-bar {
                 font-size: 16px;
                 padding: 12px 20px;
@@ -503,7 +486,6 @@ if ($version) $current_version = $version['version'];
     <script>
         pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
 
-        // Suppress PDF.js warnings
         if (typeof pdfjsLib !== 'undefined') {
             pdfjsLib.PDFJS = pdfjsLib.PDFJS || {};
             pdfjsLib.PDFJS.verbosity = 0;
@@ -541,21 +523,17 @@ if ($version) $current_version = $version['version'];
         let localVideoUnlockAttempts = 0;
 
         let pdfDoc = null;
-        let currentPageSet = 0;
+        let currentPageIndex = 0;
         let totalPages = 0;
-        let pagesPerView = 2;
         let pdfRotationInterval = null;
 
-        // Update clearAllTimeouts to clear PDF rotation
         function clearAllTimeouts() {
             currentTimeouts.forEach(timeout => clearTimeout(timeout));
             currentTimeouts = [];
-            // Clear slideshow pairs timeouts
             if (window.pairTimeoutIds) {
                 window.pairTimeoutIds.forEach(id => clearTimeout(id));
                 window.pairTimeoutIds = [];
             }
-            // Clear PDF rotation interval
             if (pdfRotationInterval) {
                 clearInterval(pdfRotationInterval);
                 pdfRotationInterval = null;
@@ -589,23 +567,15 @@ if ($version) $current_version = $version['version'];
                             'Accept': 'application/json'
                         }
                     })
-                    .then(response => {
-                        if (!response.ok) {
-                            throw new Error('HTTP ' + response.status);
-                        }
-                        return response.json();
-                    })
+                    .then(response => response.json())
                     .then(data => {
                         if (data && data.has_update) {
-                            console.log('Update detected, refreshing to base URL');
+                            console.log('Update detected, refreshing');
                             window.location.href = '?mode=' + currentMode;
                         }
                     })
-                    .catch(error => {
-                        // Don't log every error to avoid console spam
-                        // console.log('Polling check failed, will retry');
-                    });
-            }, 10000); // Increase to 10 seconds to reduce frequency
+                    .catch(error => {});
+            }, 10000);
         }
 
         function loadContent() {
@@ -615,17 +585,16 @@ if ($version) $current_version = $version['version'];
 
             if (!currentContent || !currentContent.content_type) {
                 wrapper.innerHTML = `
-            <div class="message-container">
-                <div class="message-card memo">
-                    <div class="message-icon">📺</div>
-                    <div class="message-text">No content available for ${currentMode.toUpperCase()} mode.<br>Please check back later.</div>
-                </div>
-            </div>
-        `;
+                    <div class="message-container">
+                        <div class="message-card memo">
+                            <div class="message-icon">📺</div>
+                            <div class="message-text">No content available for ${currentMode.toUpperCase()} mode.<br>Please check back later.</div>
+                        </div>
+                    </div>
+                `;
                 return;
             }
 
-            // Show description
             if ((currentContent.content_type === 'slideshow' || currentContent.content_type === 'ppt') && currentContent.description) {
                 showDescription(currentContent.description);
             } else {
@@ -633,10 +602,7 @@ if ($version) $current_version = $version['version'];
             }
 
             if (currentContent.content_type === 'slideshow') {
-                // First priority: Use layout data from PHP if available
                 if (currentLayoutData && currentLayoutData.type && currentLayoutData.type !== 'slideshow') {
-                    console.log('Loading layout from PHP:', currentLayoutData);
-                    // For multi-image layouts (2-image, 3-image, 4-image), use slideshow pairs
                     if (currentLayoutData.type === '2-image' || currentLayoutData.type === '3-image' || currentLayoutData.type === '4-image') {
                         loadSlideshowPairs(currentLayoutData);
                     } else {
@@ -644,42 +610,22 @@ if ($version) $current_version = $version['version'];
                     }
                     return;
                 }
-
-                // Check if we have slides from DB (traditional slideshow)
                 if (currentSlides && currentSlides.length > 0) {
                     loadSlideshow();
                     return;
                 }
-
-                // Try to parse content_data
                 try {
-                    const parsed = typeof currentContent.content_data === 'string' ?
-                        JSON.parse(currentContent.content_data) :
-                        currentContent.content_data;
-
-                    console.log('Parsed content_data:', parsed);
-
-                    if (parsed) {
-                        // Check if it's a multi-image layout
-                        if (parsed.type && (parsed.type === '2-image' || parsed.type === '3-image' || parsed.type === '4-image') && parsed.images && parsed.images.length > 0) {
-                            console.log('Detected multi-image layout from content_data');
+                    const parsed = typeof currentContent.content_data === 'string' ? JSON.parse(currentContent.content_data) : currentContent.content_data;
+                    if (parsed && parsed.images && parsed.images.length > 0) {
+                        if (parsed.type && (parsed.type === '2-image' || parsed.type === '3-image' || parsed.type === '4-image')) {
                             loadSlideshowPairs(parsed);
-                            return;
-                        }
-                        // Check if it's a regular slideshow with images array
-                        else if (parsed.images && parsed.images.length > 0) {
-                            console.log('Detected slideshow images from content_data');
+                        } else {
                             currentSlides = parsed.images;
                             loadSlideshow();
-                            return;
                         }
+                        return;
                     }
-                } catch (e) {
-                    console.log('Failed to parse content_data:', e);
-                }
-
-                // Final fallback
-                console.log('No valid slideshow data found, showing message');
+                } catch (e) {}
                 loadMessage();
             } else if (currentContent.content_type === 'youtube') {
                 loadYouTube();
@@ -747,8 +693,6 @@ if ($version) $current_version = $version['version'];
             const images = layoutData.images || [];
             const imagesPerView = layoutData.type === '2-image' ? 2 : (layoutData.type === '3-image' ? 3 : 4);
 
-            console.log('Loading slideshow pairs:', imagesPerView, 'images per view, Total images:', images.length);
-
             if (images.length === 0) {
                 loadMessage();
                 return;
@@ -756,8 +700,6 @@ if ($version) $current_version = $version['version'];
 
             let currentPairIndex = 0;
             let timeoutIds = [];
-
-            // Calculate how many pairs we need
             const totalPairs = Math.ceil(images.length / imagesPerView);
 
             function displayPair(pairIndex) {
@@ -765,78 +707,50 @@ if ($version) $current_version = $version['version'];
                 const endIdx = Math.min(startIdx + imagesPerView, images.length);
                 const currentImages = images.slice(startIdx, endIdx);
 
-                console.log(`Displaying pair ${pairIndex + 1}/${totalPairs}, images ${startIdx + 1}-${endIdx} of ${images.length}`);
-
                 let html = '';
                 const gap = 15;
                 const padding = 20;
 
-                // Create grid based on layout type
                 if (layoutData.type === '4-image') {
                     html = `<div style="display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; width: 100vw; height: 100vh; gap: ${gap}px; padding: ${padding}px; background: #000; box-sizing: border-box;">`;
                 } else if (layoutData.type === '2-image') {
                     html = `<div style="display: grid; grid-template-columns: 1fr 1fr; width: 100vw; height: 100vh; gap: ${gap}px; padding: ${padding}px; background: #000; box-sizing: border-box;">`;
                 } else if (layoutData.type === '3-image') {
                     html = `<div style="display: grid; grid-template-columns: 1fr 1fr 1fr; width: 100vw; height: 100vh; gap: ${gap}px; padding: ${padding}px; background: #000; box-sizing: border-box;">`;
-                } else {
-                    html = `<div style="display: grid; grid-template-columns: 1fr 1fr; width: 100vw; height: 100vh; gap: ${gap}px; padding: ${padding}px; background: #000; box-sizing: border-box;">`;
                 }
 
-                // Add images for this pair
                 for (let i = 0; i < imagesPerView; i++) {
                     if (i < currentImages.length) {
                         let imagePath = currentImages[i].path || currentImages[i].image_path;
-                        if (!imagePath) {
-                            console.error('No image path for index', i);
-                            continue;
+                        if (imagePath) {
+                            imagePath = imagePath.replace(/^\/+/, '');
+                            if (!imagePath.startsWith('uploads/')) {
+                                imagePath = 'uploads/' + imagePath;
+                            }
+                            html += `<div style="display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; overflow: hidden; background: #0a0a0a; border-radius: 16px;">
+                                        <img src="/${imagePath}" style="width: 100%; height: 100%; object-fit: contain;" onerror="this.parentElement.innerHTML='<div style=\'color:#666;text-align:center;\'>⚠️</div>'">
+                                    </div>`;
                         }
-
-                        // Fix path
-                        imagePath = imagePath.replace(/^\/+/, '');
-                        if (!imagePath.startsWith('uploads/')) {
-                            imagePath = 'uploads/' + imagePath;
-                        }
-
-                        html += `<div style="display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; overflow: hidden; background: #0a0a0a; border-radius: 16px;">
-                            <img src="/${imagePath}" 
-                                 style="width: 100%; height: 100%; object-fit: contain;" 
-                                 onerror="this.onerror=null; this.parentElement.style.background='#333'; this.parentElement.innerHTML='<div style=\'color:#666;text-align:center;padding:20px;\'>⚠️<br>Image ${startIdx + i + 1}<br>Failed to load</div>';">
-                        </div>`;
                     } else {
-                        // Empty slot
-                        html += `<div style="display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; background: #2a2a2a; border-radius: 16px; color: #666;">
-                            <div style="text-align: center;">Empty Slot</div>
-                        </div>`;
+                        html += `<div style="display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; background: #2a2a2a; border-radius: 16px; color: #666;"><div>Empty</div></div>`;
                     }
                 }
-
                 html += `</div>`;
                 wrapper.innerHTML = html;
 
-                // Schedule next pair
-                const duration = (currentImages[0]?.duration || 10) * 1000; // Use individual slide duration or default 10 seconds
-                const timeoutId = setTimeout(() => {
-                    const nextPair = (pairIndex + 1) % totalPairs;
-                    displayPair(nextPair);
-                }, duration);
-
+                const duration = (currentImages[0]?.duration || 10) * 1000;
+                const timeoutId = setTimeout(() => displayPair((pairIndex + 1) % totalPairs), duration);
                 timeoutIds.push(timeoutId);
             }
 
-            // Clear previous timeouts when function is called again
             if (window.pairTimeoutIds) {
                 window.pairTimeoutIds.forEach(id => clearTimeout(id));
             }
             window.pairTimeoutIds = timeoutIds;
-
-            // Start displaying from first pair
             displayPair(0);
 
-            // Set overall timeout to move to next content after display_duration
             if (currentContent.display_duration && currentContent.display_duration > 0) {
                 const overallTimeoutId = setTimeout(() => {
-                    console.log('Overall display duration expired, moving to next content');
-                    // Clear all pair timeouts
                     if (window.pairTimeoutIds) {
                         window.pairTimeoutIds.forEach(id => clearTimeout(id));
                     }
@@ -852,10 +766,7 @@ if ($version) $current_version = $version['version'];
             const layoutType = layoutData.type;
             const images = layoutData.images || [];
 
-            console.log('Loading multi-image layout:', layoutType, 'Images:', images);
-
             if (images.length === 0) {
-                console.log('No images found for multi-image layout, falling back to message');
                 loadMessage();
                 return;
             }
@@ -864,57 +775,39 @@ if ($version) $current_version = $version['version'];
             const gap = 15;
             const padding = 20;
 
-            // Determine grid layout based on type
             if (layoutType === '4-image') {
                 html = `<div style="display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; width: 100vw; height: 100vh; gap: ${gap}px; padding: ${padding}px; background: #000; box-sizing: border-box;">`;
             } else if (layoutType === '2-image') {
                 html = `<div style="display: grid; grid-template-columns: 1fr 1fr; width: 100vw; height: 100vh; gap: ${gap}px; padding: ${padding}px; background: #000; box-sizing: border-box;">`;
-            } else if (layoutType === '3-image') {
-                html = `<div style="display: grid; grid-template-columns: 1fr 1fr 1fr; width: 100vw; height: 100vh; gap: ${gap}px; padding: ${padding}px; background: #000; box-sizing: border-box;">`;
             } else {
-                html = `<div style="display: grid; grid-template-columns: 1fr 1fr; width: 100vw; height: 100vh; gap: ${gap}px; padding: ${padding}px; background: #000; box-sizing: border-box;">`;
+                const columns = layoutType === '3-image' ? '1fr 1fr 1fr' : '1fr 1fr';
+                html = `<div style="display: grid; grid-template-columns: ${columns}; width: 100vw; height: 100vh; gap: ${gap}px; padding: ${padding}px; background: #000; box-sizing: border-box;">`;
             }
 
-            // Process each image
             images.forEach((image, index) => {
-                // Get the image path
                 let imagePath = image.path || image.image_path;
-
-                if (!imagePath) {
-                    console.error('No image path found for image:', image);
-                    return;
+                if (imagePath) {
+                    imagePath = imagePath.replace(/^\/+/, '');
+                    if (!imagePath.startsWith('uploads/')) {
+                        imagePath = 'uploads/' + imagePath;
+                    }
+                    html += `<div style="display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; overflow: hidden; background: #0a0a0a; border-radius: 16px;">
+                                <img src="/${imagePath}" style="width: 100%; height: 100%; object-fit: contain;" onerror="this.parentElement.innerHTML='<div style=\'color:#666;text-align:center;\'>⚠️</div>'">
+                            </div>`;
                 }
-
-                // Fix the path - remove any leading slashes and ensure it's relative
-                imagePath = imagePath.replace(/^\/+/, '');
-
-                // If path doesn't start with 'uploads/', add it
-                if (!imagePath.startsWith('uploads/')) {
-                    imagePath = 'uploads/' + imagePath;
-                }
-
-                console.log(`Image ${index + 1} final path:`, imagePath);
-
-                html += `<div style="display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; overflow: hidden; background: #0a0a0a; border-radius: 16px;">
-                    <img src="/${imagePath}" 
-                         style="width: 100%; height: 100%; object-fit: contain;" 
-                         onerror="this.onerror=null; this.parentElement.style.background='#333'; this.parentElement.innerHTML='<div style=\'color:#666;text-align:center;padding:20px;\'>⚠️<br>Image ${index + 1}<br>Failed to load</div>';">
-                </div>`;
             });
 
-            // Fill empty slots for 4-image layout
             if (layoutType === '4-image' && images.length < 4) {
                 for (let i = images.length; i < 4; i++) {
                     html += `<div style="display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; background: #2a2a2a; border-radius: 16px; color: #666;">
-                        <div style="text-align: center;">Empty Slot</div>
-                    </div>`;
+                                <div style="text-align: center;">Empty Slot</div>
+                            </div>`;
                 }
             }
 
             html += `</div>`;
             wrapper.innerHTML = html;
 
-            // Set timeout to move to next content
             if (currentContent.display_duration && currentContent.display_duration > 0) {
                 const timeoutId = setTimeout(() => loadNextContent(), currentContent.display_duration * 1000);
                 currentTimeouts.push(timeoutId);
@@ -923,27 +816,11 @@ if ($version) $current_version = $version['version'];
 
         function loadYouTube() {
             const wrapper = document.getElementById('contentWrapper');
-            let videoUrl = currentContent.content_data;
-            let videoId = extractYouTubeId(videoUrl);
-
+            let videoId = extractYouTubeId(currentContent.content_data);
             const embedUrl = `https://www.youtube.com/embed/${videoId}?autoplay=1&loop=1&playlist=${videoId}&controls=0&rel=0&modestbranding=1&playsinline=1`;
-
-            wrapper.innerHTML = `
-                <div class="youtube-container">
-                    <iframe class="youtube-iframe" 
-                            src="${embedUrl}"
-                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                            allowfullscreen>
-                    </iframe>
-                </div>
-            `;
-
-            if (currentContent.display_duration && currentContent.display_duration > 0) {
-                const timeoutId = setTimeout(() => {
-                    console.log('Video duration expired, loading next content');
-                    loadNextContent();
-                }, currentContent.display_duration * 1000);
-                currentTimeouts.push(timeoutId);
+            wrapper.innerHTML = `<div class="youtube-container"><iframe class="youtube-iframe" src="${embedUrl}" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe></div>`;
+            if (currentContent.display_duration > 0) {
+                currentTimeouts.push(setTimeout(() => loadNextContent(), currentContent.display_duration * 1000));
             }
         }
 
@@ -952,9 +829,7 @@ if ($version) $current_version = $version['version'];
             let videoData;
 
             try {
-                videoData = typeof currentContent.content_data === 'string' ?
-                    JSON.parse(currentContent.content_data) :
-                    currentContent.content_data;
+                videoData = typeof currentContent.content_data === 'string' ? JSON.parse(currentContent.content_data) : currentContent.content_data;
             } catch (e) {
                 videoData = {
                     file_path: currentContent.content_data
@@ -963,79 +838,25 @@ if ($version) $current_version = $version['version'];
 
             let videoPath = videoData.file_path || videoData.path;
             if (!videoPath) {
-                console.error('No video path found');
                 loadMessage();
                 return;
             }
 
-            // Clean up the path
             videoPath = videoPath.replace(/^\/+/, '');
-
-            // Ensure it has the correct prefix
             if (!videoPath.startsWith('uploads/') && !videoPath.startsWith('videos/')) {
                 videoPath = 'uploads/videos/' + videoPath.replace(/^uploads\/?/, '');
             }
 
-            console.log('Loading video from path:', videoPath);
-
-            wrapper.innerHTML = `
-        <div class="local-video-container">
-            <video id="localVideo" autoplay playsinline loop controls style="width:100%;height:100%;object-fit:contain;">
-                <source src="/${videoPath}" type="video/mp4">
-                Your browser does not support the video tag.
-            </video>
-        </div>
-    `;
+            wrapper.innerHTML = `<div class="local-video-container"><video id="localVideo" autoplay playsinline loop controls style="width:100%;height:100%;object-fit:contain;"><source src="/${videoPath}" type="video/mp4"></video></div>`;
 
             const video = document.getElementById('localVideo');
             if (video) {
-                // Load the video
                 video.load();
-
-                // Try to play with sound
-                const playVideo = () => {
-                    video.muted = false;
-                    video.volume = 1.0;
-                    video.play().catch(e => {
-                        console.log('Play failed:', e);
-                        // Try with muted first if autoplay is blocked
-                        video.muted = true;
-                        video.play().then(() => {
-                            console.log('Playing muted, will try to unmute');
-                            // Try to unmute after a short delay
-                            setTimeout(() => {
-                                video.muted = false;
-                                video.play().catch(() => {});
-                            }, 1000);
-                        }).catch(err => console.log('Even muted play failed:', err));
-                    });
-                };
-
-                // Wait for video to be ready
-                video.addEventListener('canplay', playVideo);
-                video.addEventListener('error', (e) => {
-                    console.error('Video error:', e);
-                    console.error('Video error code:', video.error ? video.error.code : 'unknown');
-                    wrapper.innerHTML = `<div class="message-container"><div class="message-card memo"><div class="message-icon">🎬</div><div class="message-text">Video failed to load<br><small style="font-size:14px;">Path: /${videoPath}</small></div></div></div>`;
-                    // Still schedule next content after duration
-                    if (currentContent.display_duration && currentContent.display_duration > 0) {
-                        const timeoutId = setTimeout(() => loadNextContent(), currentContent.display_duration * 1000);
-                        currentTimeouts.push(timeoutId);
-                    }
-                });
+                video.play().catch(e => console.log('Play error:', e));
             }
 
-            // Set timeout to move to next content
             if (currentContent.display_duration && currentContent.display_duration > 0) {
-                const timeoutId = setTimeout(() => {
-                    console.log('Video duration expired, loading next content');
-                    const video = document.getElementById('localVideo');
-                    if (video) {
-                        video.pause();
-                    }
-                    loadNextContent();
-                }, currentContent.display_duration * 1000);
-                currentTimeouts.push(timeoutId);
+                currentTimeouts.push(setTimeout(() => loadNextContent(), currentContent.display_duration * 1000));
             }
         }
 
@@ -1063,261 +884,153 @@ if ($version) $current_version = $version['version'];
             pdfjsLib.getDocument(pdfUrl).promise.then(function(pdf) {
                 pdfDoc = pdf;
                 totalPages = pdf.numPages;
-                currentPageSet = 0;
+                currentPageIndex = 0;
 
-                // Clear any existing rotation interval
                 if (pdfRotationInterval) clearInterval(pdfRotationInterval);
 
                 if (totalPages === 1) {
-                    // Single page - display centered
-                    displaySinglePDFPage();
-                    // Schedule next content after display_duration
+                    renderSinglePDFPage();
                     if (currentContent.display_duration && currentContent.display_duration > 0) {
-                        const timeoutId = setTimeout(() => loadNextContent(), currentContent.display_duration * 1000);
-                        currentTimeouts.push(timeoutId);
+                        currentTimeouts.push(setTimeout(() => loadNextContent(), currentContent.display_duration * 1000));
                     }
                 } else {
-                    // Multiple pages - show 2 pages at a time
-                    displayPDFPageSet();
+                    renderPDFPages();
                     startPDFRotation();
                 }
             }).catch(function(error) {
                 console.error('Error loading PDF:', error);
                 wrapper.innerHTML = `<div class="message-container"><div class="message-card memo"><div class="message-icon">📄</div><div class="message-text">Error loading PDF</div></div></div>`;
                 if (currentContent.display_duration > 0) {
-                    const timeoutId = setTimeout(() => loadNextContent(), currentContent.display_duration * 1000);
-                    currentTimeouts.push(timeoutId);
+                    currentTimeouts.push(setTimeout(() => loadNextContent(), currentContent.display_duration * 1000));
                 }
             });
         }
 
-        function startPDFRotation() {
-            // Clear any existing rotation interval
-            if (pdfRotationInterval) clearInterval(pdfRotationInterval);
-
-            // Rotate every 20 seconds (20000 ms)
-            pdfRotationInterval = setInterval(() => {
-                if (pdfDoc) {
-                    const startPage = currentPageSet * pagesPerView + 1;
-                    const endPage = Math.min(startPage + pagesPerView - 1, totalPages);
-
-                    // Check if we've reached the end
-                    if (endPage >= totalPages) {
-                        // Loop back to beginning
-                        currentPageSet = 0;
-                    } else {
-                        currentPageSet++;
-                    }
-                    displayPDFPageSet();
-                }
-            }, 20000); // 20 seconds
-
-            currentTimeouts.push(pdfRotationInterval);
-
-            // Set overall timeout to move to next content after display_duration
-            if (currentContent.display_duration && currentContent.display_duration > 0) {
-                const overallTimeoutId = setTimeout(() => {
-                    // Stop rotation
-                    if (pdfRotationInterval) clearInterval(pdfRotationInterval);
-                    loadNextContent();
-                }, currentContent.display_duration * 1000);
-                currentTimeouts.push(overallTimeoutId);
-            }
-        }
-
-        function displaySinglePDFPage() {
+        function renderSinglePDFPage() {
             if (!pdfDoc) return;
 
             const wrapper = document.getElementById('contentWrapper');
-            wrapper.innerHTML = '<div class="pdf-container"><div class="pdf-loading">Rendering page...</div></div>';
+            wrapper.innerHTML = '<div class="pdf-container"><div class="pdf-viewer single-page"></div></div>';
+
+            const viewer = wrapper.querySelector('.pdf-viewer');
 
             pdfDoc.getPage(1).then(function(page) {
-                // Get container dimensions
-                const container = wrapper.querySelector('.pdf-container') || wrapper;
-                const containerWidth = window.innerWidth - 60;
-                const containerHeight = window.innerHeight - 100;
-
-                // Calculate scale to fit page in container
+                const containerWidth = window.innerWidth - 80;
+                const containerHeight = window.innerHeight - 120;
                 const viewport = page.getViewport({
                     scale: 1
                 });
+
                 const scaleX = containerWidth / viewport.width;
                 const scaleY = containerHeight / viewport.height;
-                const scale = Math.min(scaleX, scaleY, 2.5); // Max scale 2.5 for quality
+                const scale = Math.min(scaleX, scaleY, 3.0);
 
                 const scaledViewport = page.getViewport({
                     scale: scale
                 });
 
-                // Create canvas with higher quality
+                const pageWrapper = document.createElement('div');
+                pageWrapper.className = 'pdf-page-wrapper single';
+                pageWrapper.style.width = scaledViewport.width + 'px';
+                pageWrapper.style.height = scaledViewport.height + 'px';
+
                 const canvas = document.createElement('canvas');
-                const context = canvas.getContext('2d');
                 canvas.width = scaledViewport.width;
                 canvas.height = scaledViewport.height;
-                canvas.style.width = 'auto';
-                canvas.style.height = 'auto';
-                canvas.style.maxWidth = '100%';
-                canvas.style.maxHeight = '100%';
-                canvas.style.objectFit = 'contain';
 
-                wrapper.innerHTML = `
-            <div class="pdf-container" style="display: flex; align-items: center; justify-content: center; background: #000;">
-                <div style="display: flex; align-items: center; justify-content: center; width: 100%; height: 100%;">
-                </div>
-            </div>
-        `;
-
-                const innerDiv = wrapper.querySelector('div div');
-                innerDiv.appendChild(canvas);
+                pageWrapper.appendChild(canvas);
+                viewer.appendChild(pageWrapper);
 
                 page.render({
-                    canvasContext: context,
+                    canvasContext: canvas.getContext('2d'),
                     viewport: scaledViewport
                 });
             });
         }
 
-        function displayPDFPageSet() {
+        function renderPDFPages() {
             if (!pdfDoc) return;
 
-            const startPage = currentPageSet * pagesPerView + 1;
-            let endPage = Math.min(startPage + pagesPerView - 1, totalPages);
-
-            // Ensure we show 2 pages even if last set has only 1 page
-            // For the last page, show it centered
-            const isLastSet = startPage > totalPages;
+            const wrapper = document.getElementById('contentWrapper');
+            const startPage = currentPageIndex * 2 + 1;
+            const endPage = Math.min(startPage + 1, totalPages);
 
             if (startPage > totalPages) {
-                // Loop back to beginning
-                currentPageSet = 0;
-                displayPDFPageSet();
+                currentPageIndex = 0;
+                renderPDFPages();
                 return;
             }
 
-            const wrapper = document.getElementById('contentWrapper');
-            wrapper.innerHTML = '<div class="pdf-container"><div class="pdf-loading">Rendering pages...</div></div>';
-
-            const container = wrapper.querySelector('.pdf-container');
-            container.innerHTML = '';
-            container.style.display = 'flex';
-            container.style.flexDirection = 'column';
-            container.style.background = '#000';
-
-            // If this is the last set and only has 1 page, show it centered
-            const isSinglePageInSet = (endPage - startPage + 1) === 1;
-
-            if (isSinglePageInSet) {
-                container.style.alignItems = 'center';
-                container.style.justifyContent = 'center';
-            } else {
-                container.style.flexDirection = 'row';
-                container.style.gap = '20px';
-                container.style.padding = '30px';
-                container.style.alignItems = 'center';
-                container.style.justifyContent = 'center';
-            }
+            wrapper.innerHTML = '<div class="pdf-container"><div class="pdf-viewer two-pages"></div></div>';
+            const viewer = wrapper.querySelector('.pdf-viewer');
 
             const pagePromises = [];
-            const pageElements = [];
 
             for (let pageNum = startPage; pageNum <= endPage; pageNum++) {
-                const pageDiv = document.createElement('div');
-                if (isSinglePageInSet) {
-                    pageDiv.style.display = 'flex';
-                    pageDiv.style.alignItems = 'center';
-                    pageDiv.style.justifyContent = 'center';
-                    pageDiv.style.width = '100%';
-                    pageDiv.style.height = '100%';
-                } else {
-                    pageDiv.style.flex = '1';
-                    pageDiv.style.display = 'flex';
-                    pageDiv.style.alignItems = 'center';
-                    pageDiv.style.justifyContent = 'center';
-                    pageDiv.style.background = '#fff';
-                    pageDiv.style.borderRadius = '16px';
-                    pageDiv.style.overflow = 'hidden';
-                    pageDiv.style.boxShadow = '0 8px 32px rgba(0,0,0,0.4)';
-                    pageDiv.style.minHeight = '0';
-                }
-                container.appendChild(pageDiv);
-                pageElements.push(pageDiv);
-
-                pagePromises.push(
-                    pdfDoc.getPage(pageNum).then(function(page) {
-                        return {
-                            page: page,
-                            pageNum: pageNum
-                        };
-                    })
-                );
+                pagePromises.push(pdfDoc.getPage(pageNum));
             }
 
-            Promise.all(pagePromises).then(function(pagesData) {
-                pagesData.forEach(function(pageData, idx) {
-                    const page = pageData.page;
-                    const pageDiv = pageElements[idx];
+            Promise.all(pagePromises).then(function(pages) {
+                const containerWidth = (window.innerWidth - 100) / pages.length;
+                const containerHeight = window.innerHeight - 140;
 
-                    // Calculate scale based on container
-                    let scale;
-                    if (isSinglePageInSet) {
-                        const containerWidth = window.innerWidth - 60;
-                        const containerHeight = window.innerHeight - 100;
-                        const viewport = page.getViewport({
-                            scale: 1
-                        });
-                        const scaleX = containerWidth / viewport.width;
-                        const scaleY = containerHeight / viewport.height;
-                        scale = Math.min(scaleX, scaleY, 2.5);
-                    } else {
-                        const containerWidth = (window.innerWidth / 2) - 60;
-                        const viewport = page.getViewport({
-                            scale: 1
-                        });
-                        scale = (containerWidth / viewport.width) * 1.2; // Slightly larger for better quality
-                        scale = Math.min(scale, 2.0);
-                    }
+                pages.forEach(function(page) {
+                    const viewport = page.getViewport({
+                        scale: 1
+                    });
+                    const scaleX = containerWidth / viewport.width;
+                    const scaleY = containerHeight / viewport.height;
+                    const scale = Math.min(scaleX, scaleY, 2.5);
 
                     const scaledViewport = page.getViewport({
                         scale: scale
                     });
 
+                    const pageWrapper = document.createElement('div');
+                    pageWrapper.className = 'pdf-page-wrapper';
+                    pageWrapper.style.width = scaledViewport.width + 'px';
+                    pageWrapper.style.height = scaledViewport.height + 'px';
+
                     const canvas = document.createElement('canvas');
-                    const context = canvas.getContext('2d');
                     canvas.width = scaledViewport.width;
                     canvas.height = scaledViewport.height;
-                    canvas.style.width = '100%';
-                    canvas.style.height = 'auto';
-                    canvas.style.maxWidth = '100%';
-                    canvas.style.maxHeight = '100%';
-                    canvas.style.objectFit = 'contain';
 
-                    pageDiv.appendChild(canvas);
+                    pageWrapper.appendChild(canvas);
+                    viewer.appendChild(pageWrapper);
 
                     page.render({
-                        canvasContext: context,
+                        canvasContext: canvas.getContext('2d'),
                         viewport: scaledViewport
                     });
                 });
 
-                // Add page indicator
                 const pageIndicator = document.createElement('div');
                 pageIndicator.className = 'pdf-page-number';
-                pageIndicator.textContent = `Pages ${startPage}-${endPage} of ${totalPages}`;
-                container.appendChild(pageIndicator);
+                pageIndicator.textContent = `Page ${startPage}-${endPage} of ${totalPages}`;
+                wrapper.querySelector('.pdf-container').appendChild(pageIndicator);
             });
         }
 
-        function scheduleNextPDFSet() {
-            if (window.pdfTimeout) clearTimeout(window.pdfTimeout);
-            const duration = (currentContent.display_duration && currentContent.display_duration > 0) ? currentContent.display_duration * 1000 : 60000;
-            window.pdfTimeout = setTimeout(() => {
+        function startPDFRotation() {
+            if (pdfRotationInterval) clearInterval(pdfRotationInterval);
+
+            pdfRotationInterval = setInterval(() => {
                 if (pdfDoc) {
-                    currentPageSet++;
-                    displayPDFPageSet();
-                    scheduleNextPDFSet();
+                    const totalSets = Math.ceil(totalPages / 2);
+                    currentPageIndex = (currentPageIndex + 1) % totalSets;
+                    renderPDFPages();
                 }
-            }, duration);
-            currentTimeouts.push(window.pdfTimeout);
+            }, 20000);
+
+            currentTimeouts.push(pdfRotationInterval);
+
+            if (currentContent.display_duration && currentContent.display_duration > 0) {
+                const overallTimeoutId = setTimeout(() => {
+                    if (pdfRotationInterval) clearInterval(pdfRotationInterval);
+                    loadNextContent();
+                }, currentContent.display_duration * 1000);
+                currentTimeouts.push(overallTimeoutId);
+            }
         }
 
         function loadMessage() {
@@ -1331,32 +1044,22 @@ if ($version) $current_version = $version['version'];
                 congratulation: '🎉'
             };
             wrapper.innerHTML = `<div class="message-container"><div class="message-card ${messageType}"><div class="message-icon">${icons[messageType] || '📝'}</div><div class="message-text">${escapeHtml(messageText)}</div></div></div>`;
-
             if (currentContent.display_duration && currentContent.display_duration > 0) {
-                const timeoutId = setTimeout(() => loadNextContent(), currentContent.display_duration * 1000);
-                currentTimeouts.push(timeoutId);
+                currentTimeouts.push(setTimeout(() => loadNextContent(), currentContent.display_duration * 1000));
             }
         }
 
         function loadNextContent() {
             const nextId = currentContent.next_content_id;
             if (nextId && !isNaN(parseInt(nextId)) && parseInt(nextId) > 0) {
-                console.log('Moving to next content ID:', nextId);
-                // Navigate to next content but keep mode
                 window.location.href = '?id=' + nextId + '&mode=' + currentMode;
             } else {
-                console.log('End of content chain, restarting from beginning');
-                // Go back to base URL to start from the first content
                 window.location.href = '?mode=' + currentMode;
             }
         }
 
         function extractYouTubeId(url) {
-            const patterns = [
-                /(?:youtube\.com\/watch\?v=)([^&]+)/,
-                /(?:youtu\.be\/)([^?]+)/,
-                /(?:youtube\.com\/embed\/)([^?]+)/
-            ];
+            const patterns = [/(?:youtube\.com\/watch\?v=)([^&]+)/, /(?:youtu\.be\/)([^?]+)/, /(?:youtube\.com\/embed\/)([^?]+)/];
             for (const pattern of patterns) {
                 const match = url.match(pattern);
                 if (match) return match[1];
@@ -1370,7 +1073,6 @@ if ($version) $current_version = $version['version'];
             return div.innerHTML;
         }
 
-        // Initialize
         document.addEventListener('DOMContentLoaded', function() {
             loadContent();
             startPolling();
