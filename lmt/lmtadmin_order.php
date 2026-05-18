@@ -14,6 +14,7 @@ try {
 }
 
 // Handle save order
+// Handle save order
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_order'])) {
     try {
         $order_data = json_decode($_POST['order_data'], true);
@@ -21,14 +22,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_order'])) {
         if ($order_data && is_array($order_data)) {
             $pdo->beginTransaction();
 
+            // Update display_order for all items
             foreach ($order_data as $index => $item) {
                 $stmt = $pdo->prepare("UPDATE content SET display_order = ? WHERE id = ? AND admin_role = 'lmt'");
                 $stmt->execute([$index, $item['id']]);
             }
 
+            // Reset next_content_id
             $stmt = $pdo->prepare("UPDATE content SET next_content_id = NULL WHERE admin_role = 'lmt'");
             $stmt->execute();
 
+            // Build new chain based on display_order and active status
             $active_items = [];
             foreach ($order_data as $item) {
                 $stmt = $pdo->prepare("SELECT is_active FROM content WHERE id = ?");
@@ -39,11 +43,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_order'])) {
                 }
             }
 
+            // Update next_content_id chain
             for ($i = 0; $i < count($active_items) - 1; $i++) {
                 $stmt = $pdo->prepare("UPDATE content SET next_content_id = ? WHERE id = ?");
                 $stmt->execute([$active_items[$i + 1], $active_items[$i]]);
             }
 
+            // Increment version to trigger TV refresh
             $stmt = $pdo->prepare("UPDATE content_version SET version = version + 1, last_update = NOW() WHERE admin_role = 'lmt'");
             $stmt->execute();
 
@@ -54,6 +60,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_order'])) {
         $pdo->rollBack();
         $_SESSION['flash_error'] = "Error: " . $e->getMessage();
     }
+
+    // Redirect to the order page WITHOUT any content ID parameter
+    // This ensures the index page shows the first content in the new order
     header('Location: lmtadmin_order.php');
     exit();
 }
@@ -194,12 +203,11 @@ function getLayoutType($content_type, $content_data)
 {
     if ($content_type !== 'slideshow') return null;
     $data = json_decode($content_data, true);
-    if ($data && isset($data['type'])) {
+    if ($data && isset($data['type']) && $data['type'] !== 'slideshow') {
         return $data['type'];
     }
     return 'slideshow';
 }
-
 function getLayoutIcon($layout_type)
 {
     switch ($layout_type) {
@@ -1319,29 +1327,52 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
             document.getElementById('previewContent').innerHTML = `<div class="preview-placeholder"><div class="preview-placeholder-icon">⚠️</div><div>${msg || 'Preview not available'}</div></div>`;
         }
 
+        // Replace the submitOrder and saveOrder functions in lmtadmin_order.php with these:
+
         function submitOrder() {
             const items = document.querySelectorAll('.order-item');
-            const orderData = Array.from(items).map(item => ({
-                id: parseInt(item.getAttribute('data-id'))
+            // Get the order based on current DOM positions
+            const orderData = Array.from(items).map((item, index) => ({
+                id: parseInt(item.getAttribute('data-id')),
+                order: index
             }));
+
+            // Create form and submit
             const form = document.createElement('form');
             form.method = 'POST';
-            const input = document.createElement('input');
-            input.type = 'hidden';
-            input.name = 'order_data';
-            input.value = JSON.stringify(orderData);
-            form.appendChild(input);
+            form.action = ''; // Submit to same page
+
+            const orderInput = document.createElement('input');
+            orderInput.type = 'hidden';
+            orderInput.name = 'order_data';
+            orderInput.value = JSON.stringify(orderData);
+            form.appendChild(orderInput);
+
             const saveInput = document.createElement('input');
             saveInput.type = 'hidden';
             saveInput.name = 'save_order';
             saveInput.value = '1';
             form.appendChild(saveInput);
+
             document.body.appendChild(form);
             form.submit();
         }
 
         function saveOrder() {
-            showConfirmModal('💾 Save Display Order', 'Save this display order? Active content will play in this sequence. The TV will update immediately.', '📋', submitOrder);
+            // Get current order for confirmation message
+            const items = document.querySelectorAll('.order-item');
+            let orderList = '';
+            items.forEach((item, idx) => {
+                const title = item.querySelector('.item-title')?.innerText || 'Item';
+                orderList += `\n${idx + 1}. ${title}`;
+            });
+
+            showConfirmModal(
+                '💾 Save Display Order',
+                'Save this display order? Active content will play in this sequence. The TV will update immediately.\n\nNew order:' + orderList,
+                '📋',
+                submitOrder
+            );
         }
 
         function editDuration(id, currentDuration) {

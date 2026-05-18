@@ -145,7 +145,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'file_path' => $file_path
             ]);
 
-            // IMPORTANT: Set content_type to 'local_video' (not 'video_upload')
             $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, description, content_data, display_duration, loop_count, is_active, display_order) VALUES (?, ?, ?, ?, ?, ?, 1, ?)");
             $stmt->execute(['lmt', 'local_video', $description, $content_data, $display_duration, $loop_count, $new_display_order]);
         } elseif ($content_type === 'message') {

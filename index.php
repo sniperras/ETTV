@@ -1,6 +1,26 @@
 <?php
 require_once 'config/db.php';
 
+// Handle version check API request (MUST be at the very top before ANY output)
+if (isset($_GET['action']) && $_GET['action'] === 'check_version') {
+    header('Content-Type: application/json');
+    header('Cache-Control: no-cache, must-revalidate');
+
+    $mode = isset($_GET['mode']) ? $_GET['mode'] : 'lmt';
+    $current_version = isset($_GET['version']) ? (int)$_GET['version'] : 0;
+
+    $stmt = $pdo->prepare("SELECT version FROM content_version WHERE admin_role = ?");
+    $stmt->execute([$mode]);
+    $version = $stmt->fetch();
+    $server_version = $version ? (int)$version['version'] : 1;
+
+    echo json_encode([
+        'has_update' => ($server_version > $current_version),
+        'server_version' => $server_version
+    ]);
+    exit();
+}
+
 // Get current display mode
 $current_mode = isset($_GET['mode']) ? $_GET['mode'] : (isset($_SESSION['display_mode']) ? $_SESSION['display_mode'] : 'lmt');
 if (isset($_GET['mode'])) {
@@ -12,68 +32,26 @@ if (!in_array($current_mode, ['lmt', 'bmt'])) {
     $current_mode = 'lmt';
 }
 
-// Handle API actions directly in index.php
-$action = isset($_GET['action']) ? $_GET['action'] : '';
+// Handle content by ID - but always validate that the ID is in the active chain
+if (isset($_GET['id']) && is_numeric($_GET['id'])) {
+    $id = (int)$_GET['id'];
 
-if ($action === 'get_content') {
-    header('Content-Type: application/json');
-    $id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
+    // First, verify this content exists and is active for this mode
+    $stmt = $pdo->prepare("SELECT * FROM content WHERE id = ? AND admin_role = ? AND is_active = 1");
+    $stmt->execute([$id, $current_mode]);
+    $current_content = $stmt->fetch();
 
-    if ($id > 0) {
-        $stmt = $pdo->prepare("SELECT * FROM content WHERE id = ?");
-        $stmt->execute([$id]);
-        $content = $stmt->fetch();
-
-        if ($content) {
-            $slides = [];
-            if ($content['content_type'] === 'slideshow') {
-                $stmt2 = $pdo->prepare("SELECT * FROM content_slides WHERE content_id = ? ORDER BY slide_order ASC");
-                $stmt2->execute([$content['id']]);
-                $slides = $stmt2->fetchAll();
-            }
-            echo json_encode(['success' => true, 'content' => $content, 'slides' => $slides]);
-        } else {
-            echo json_encode(['success' => false, 'error' => 'Content not found']);
-        }
-    } elseif (isset($_GET['mode'])) {
-        $mode = $_GET['mode'];
-        $stmt = $pdo->prepare("SELECT * FROM content WHERE admin_role = ? AND is_active = 1 ORDER BY COALESCE(display_order, 999999) ASC LIMIT 1");
-        $stmt->execute([$mode]);
-        $content = $stmt->fetch();
-
-        if ($content) {
-            $slides = [];
-            if ($content['content_type'] === 'slideshow') {
-                $stmt2 = $pdo->prepare("SELECT * FROM content_slides WHERE content_id = ? ORDER BY slide_order ASC");
-                $stmt2->execute([$content['id']]);
-                $slides = $stmt2->fetchAll();
-            }
-            echo json_encode(['success' => true, 'content' => $content, 'slides' => $slides]);
-        } else {
-            echo json_encode(['success' => false, 'error' => 'No content']);
-        }
+    if (!$current_content) {
+        // If invalid ID, redirect to base URL
+        header('Location: ?mode=' . $current_mode);
+        exit();
     }
-    exit();
+} else {
+    // No ID specified - get the first active content based on display order
+    $stmt = $pdo->prepare("SELECT * FROM content WHERE admin_role = ? AND is_active = 1 ORDER BY COALESCE(display_order, 999999) ASC LIMIT 1");
+    $stmt->execute([$current_mode]);
+    $current_content = $stmt->fetch();
 }
-
-if ($action === 'check_version') {
-    header('Content-Type: application/json');
-    $mode = isset($_GET['mode']) ? $_GET['mode'] : 'lmt';
-    $current_version = isset($_GET['version']) ? (int)$_GET['version'] : 0;
-
-    $stmt = $pdo->prepare("SELECT version FROM content_version WHERE admin_role = ?");
-    $stmt->execute([$mode]);
-    $result = $stmt->fetch();
-    $latest_version = $result ? $result['version'] : 1;
-
-    echo json_encode(['has_update' => $latest_version > $current_version, 'new_version' => $latest_version]);
-    exit();
-}
-
-// Get current active content (first in the chain)
-$stmt = $pdo->prepare("SELECT * FROM content WHERE admin_role = ? AND is_active = 1 ORDER BY COALESCE(display_order, 999999) ASC LIMIT 1");
-$stmt->execute([$current_mode]);
-$current_content = $stmt->fetch();
 
 // Parse content data
 $layout_data = null;
@@ -97,7 +75,7 @@ if (!$current_content) {
     $current_content = [
         'id' => null,
         'content_type' => 'message',
-        'content_data' => 'Welcome to LMT TV Display',
+        'content_data' => 'Welcome to ET TV Display',
         'message_type' => 'memo',
         'description' => '',
         'display_duration' => 300,
@@ -106,13 +84,13 @@ if (!$current_content) {
     ];
 }
 
+// Get current version for polling (to detect order changes)
 $current_version = 1;
 $stmt = $pdo->prepare("SELECT version FROM content_version WHERE admin_role = ?");
 $stmt->execute([$current_mode]);
 $version = $stmt->fetch();
 if ($version) $current_version = $version['version'];
 ?>
-
 <!DOCTYPE html>
 <html lang="en">
 
@@ -122,6 +100,7 @@ if ($version) $current_version = $version['version'];
     <title>ET TV Display - <?php echo strtoupper($current_mode); ?></title>
     <link rel="icon" type="image/png" href="/img/ethiopian_logo.ico">
     <style>
+        /* Your existing styles remain the same */
         * {
             margin: 0;
             padding: 0;
@@ -129,7 +108,7 @@ if ($version) $current_version = $version['version'];
         }
 
         body {
-            font-family: 'Segoe UI', sans-serif;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             background: #000000;
             min-height: 100vh;
             overflow: hidden;
@@ -139,13 +118,14 @@ if ($version) $current_version = $version['version'];
             position: fixed;
             left: 0;
             top: 0;
-            width: 250px;
+            width: 280px;
             height: 100vh;
-            background: rgba(0, 0, 0, 0.4);
-            backdrop-filter: blur(10px);
-            transform: translateX(-98%);
-            transition: transform 0.3s ease;
+            background: rgba(0, 0, 0, 0.85);
+            backdrop-filter: blur(20px);
+            transform: translateX(-96%);
+            transition: transform 0.4s ease;
             z-index: 1000;
+            border-right: 1px solid rgba(255, 255, 255, 0.1);
         }
 
         .nav-dropdown:hover,
@@ -153,38 +133,39 @@ if ($version) $current_version = $version['version'];
             transform: translateX(0);
         }
 
-        .nav-dropdown.active {
-            background: rgba(0, 0, 0, 0.95);
-        }
-
         .nav-content {
-            padding: 20px;
+            padding: 30px 20px;
             color: white;
         }
 
         .nav-content h3 {
-            margin-bottom: 20px;
-            font-size: 24px;
+            margin-bottom: 25px;
+            font-size: 28px;
+            font-weight: 500;
             border-bottom: 2px solid #667eea;
-            padding-bottom: 10px;
+            padding-bottom: 15px;
         }
 
         .mode-option {
             display: block;
             width: 100%;
-            padding: 15px;
-            margin: 10px 0;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 18px 20px;
+            margin: 12px 0;
+            background: linear-gradient(135deg, rgba(102, 126, 234, 0.2) 0%, rgba(118, 75, 162, 0.2) 100%);
             color: white;
-            border: none;
-            border-radius: 10px;
-            font-size: 18px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 12px;
+            font-size: 20px;
+            font-weight: 500;
             cursor: pointer;
-            transition: transform 0.2s;
+            transition: all 0.3s ease;
+            text-align: left;
         }
 
         .mode-option:hover {
-            transform: scale(1.05);
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            transform: translateX(5px);
+            border-color: transparent;
         }
 
         .display-container {
@@ -204,21 +185,18 @@ if ($version) $current_version = $version['version'];
             top: 0;
             left: 0;
             right: 0;
-            background: rgba(0, 0, 0, 0.85);
-            backdrop-filter: blur(10px);
+            background: rgba(0, 0, 0, 0.9);
+            backdrop-filter: blur(20px);
             color: white;
             text-align: center;
-            padding: 12px 20px;
-            font-size: 18px;
+            padding: 18px 24px;
+            font-size: 20px;
             font-weight: 500;
             z-index: 1001;
-            border-bottom: 2px solid rgba(102, 126, 234, 0.5);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
             opacity: 0;
             visibility: hidden;
-            transition: opacity 0.3s ease, visibility 0.3s ease;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
+            transition: opacity 0.4s ease, visibility 0.4s ease;
         }
 
         .description-bar.visible {
@@ -250,27 +228,26 @@ if ($version) $current_version = $version['version'];
             top: 0;
             left: 0;
             opacity: 0;
-            transition: opacity 0.5s ease-in-out;
+            transition: opacity 0.8s ease-in-out;
         }
 
         .slide-image.active {
             opacity: 1;
         }
 
-        .video-container {
+        .youtube-container {
             width: 100%;
             height: 100%;
             position: relative;
             background: #000;
         }
 
-        .video-container iframe {
+        .youtube-iframe {
             width: 100%;
             height: 100%;
             border: none;
         }
 
-        /* Local Video Container */
         .local-video-container {
             width: 100%;
             height: 100%;
@@ -302,20 +279,20 @@ if ($version) $current_version = $version['version'];
             flex-direction: row;
             width: 100%;
             height: 100%;
-            gap: 15px;
-            padding: 20px;
-            background: #1a1a1a;
+            gap: 20px;
+            padding: 30px;
+            background: #0a0a0a;
         }
 
         .pdf-page {
             flex: 1;
             background: white;
-            border-radius: 8px;
+            border-radius: 16px;
             overflow: hidden;
             display: flex;
             align-items: center;
             justify-content: center;
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
             position: relative;
         }
 
@@ -327,16 +304,17 @@ if ($version) $current_version = $version['version'];
 
         .pdf-page-number {
             position: fixed;
-            bottom: 20px;
+            bottom: 30px;
             left: 50%;
             transform: translateX(-50%);
-            background: rgba(0, 0, 0, 0.7);
+            background: rgba(0, 0, 0, 0.8);
             color: white;
-            padding: 8px 20px;
-            border-radius: 20px;
-            font-size: 14px;
+            padding: 12px 28px;
+            border-radius: 40px;
+            font-size: 16px;
             z-index: 10;
-            font-weight: bold;
+            font-weight: 500;
+            backdrop-filter: blur(10px);
         }
 
         .pdf-loading {
@@ -345,7 +323,7 @@ if ($version) $current_version = $version['version'];
             left: 50%;
             transform: translate(-50%, -50%);
             color: white;
-            font-size: 18px;
+            font-size: 20px;
             text-align: center;
         }
 
@@ -356,14 +334,14 @@ if ($version) $current_version = $version['version'];
             align-items: center;
             justify-content: center;
             text-align: center;
-            padding: 40px;
-            animation: fadeIn 0.5s ease;
+            padding: 60px;
+            animation: fadeIn 0.6s ease-out;
         }
 
         @keyframes fadeIn {
             from {
                 opacity: 0;
-                transform: scale(0.9);
+                transform: scale(0.95);
             }
 
             to {
@@ -373,16 +351,16 @@ if ($version) $current_version = $version['version'];
         }
 
         .message-card {
-            max-width: 90%;
-            padding: 60px;
-            border-radius: 20px;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-            animation: slideUp 0.5s ease;
+            max-width: 85%;
+            padding: 80px;
+            border-radius: 32px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+            animation: slideUp 0.6s ease-out;
         }
 
         @keyframes slideUp {
             from {
-                transform: translateY(50px);
+                transform: translateY(40px);
                 opacity: 0;
             }
 
@@ -392,49 +370,114 @@ if ($version) $current_version = $version['version'];
             }
         }
 
+        .pdf-container canvas {
+            image-rendering: -webkit-optimize-contrast;
+            image-rendering: crisp-edges;
+            image-rendering: pixelated;
+        }
+
+        .pdf-page img,
+        .pdf-page canvas {
+            width: 100%;
+            height: auto;
+            image-rendering: high-quality;
+        }
+
+        /* For single page PDF */
+        .pdf-container.single-page {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #000;
+        }
+
+        .pdf-container.single-page canvas {
+            max-width: 90vw;
+            max-height: 90vh;
+            object-fit: contain;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+            border-radius: 8px;
+        }
+
         .warning {
             background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
-            border-left: 10px solid #ff0000;
+            border-left: 8px solid #ff0000;
         }
 
         .caution {
             background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);
-            border-left: 10px solid #ff9800;
+            border-left: 8px solid #ff9800;
         }
 
         .memo {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            border-left: 10px solid #2196f3;
+            border-left: 8px solid #2196f3;
         }
 
         .congratulation {
             background: linear-gradient(135deg, #a8edea 0%, #fed6e3 100%);
-            border-left: 10px solid #4caf50;
+            border-left: 8px solid #4caf50;
             color: #333;
         }
 
         .message-icon {
-            font-size: 80px;
+            font-size: 100px;
             margin-bottom: 30px;
         }
 
         .message-text {
-            font-size: 48px;
+            font-size: 52px;
             line-height: 1.4;
-            font-weight: bold;
+            font-weight: 600;
+        }
+
+        .warning .message-text,
+        .caution .message-text,
+        .memo .message-text {
+            color: #fff;
+        }
+
+        .congratulation .message-text {
+            color: #333;
         }
 
         .mode-indicator {
             position: fixed;
-            bottom: 20px;
-            right: 20px;
-            background: rgba(0, 0, 0, 0.7);
+            bottom: 25px;
+            right: 25px;
+            background: rgba(0, 0, 0, 0.75);
+            backdrop-filter: blur(10px);
             color: white;
-            padding: 8px 16px;
-            border-radius: 20px;
+            padding: 10px 20px;
+            border-radius: 30px;
             font-size: 14px;
-            font-weight: bold;
+            font-weight: 500;
             z-index: 999;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        @media (max-width: 1024px) {
+            .message-text {
+                font-size: 36px;
+            }
+
+            .message-card {
+                padding: 50px;
+            }
+
+            .message-icon {
+                font-size: 70px;
+            }
+
+            .pdf-horizontal-grid {
+                gap: 12px;
+                padding: 15px;
+            }
+
+            .description-bar {
+                font-size: 16px;
+                padding: 12px 20px;
+            }
         }
 
         @media (max-width: 768px) {
@@ -443,37 +486,37 @@ if ($version) $current_version = $version['version'];
             }
 
             .message-card {
-                padding: 30px;
+                padding: 35px;
             }
 
             .message-icon {
                 font-size: 50px;
             }
 
-            .pdf-horizontal-grid {
-                gap: 8px;
-                padding: 10px;
-            }
-
-            .description-bar {
-                font-size: 14px;
-                padding: 8px 15px;
+            .nav-dropdown {
+                width: 85%;
+                transform: translateX(-92%);
             }
         }
     </style>
-    <!-- PDF.js library for PDF processing -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
     <script>
         pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
+
+        // Suppress PDF.js warnings
+        if (typeof pdfjsLib !== 'undefined') {
+            pdfjsLib.PDFJS = pdfjsLib.PDFJS || {};
+            pdfjsLib.PDFJS.verbosity = 0;
+        }
     </script>
 </head>
 
 <body>
     <div class="nav-dropdown" id="navDropdown">
         <div class="nav-content">
-            <h3>Select Display</h3>
-            <button class="mode-option" onclick="switchMode('lmt')">LMT Display</button>
-            <button class="mode-option" onclick="switchMode('bmt')">BMT Display</button>
+            <h3>SELECT DISPLAY</h3>
+            <button class="mode-option" onclick="switchMode('lmt')">🟦 LMT Display</button>
+            <button class="mode-option" onclick="switchMode('bmt')">🟪 BMT Display</button>
         </div>
     </div>
 
@@ -484,7 +527,7 @@ if ($version) $current_version = $version['version'];
     </div>
 
     <div class="mode-indicator" id="modeIndicator">
-        Current: <?php echo strtoupper($current_mode); ?>
+        CURRENT: <?php echo strtoupper($current_mode); ?>
     </div>
 
     <script>
@@ -495,22 +538,27 @@ if ($version) $current_version = $version['version'];
         let currentVersion = <?php echo $current_version; ?>;
         let currentTimeouts = [];
         let pollingInterval = null;
-        let currentYouTubePlayer = null;
+        let localVideoUnlockAttempts = 0;
 
         let pdfDoc = null;
         let currentPageSet = 0;
         let totalPages = 0;
-        let pagesPerView = 4;
+        let pagesPerView = 2;
+        let pdfRotationInterval = null;
 
+        // Update clearAllTimeouts to clear PDF rotation
         function clearAllTimeouts() {
             currentTimeouts.forEach(timeout => clearTimeout(timeout));
             currentTimeouts = [];
-
-            if (currentYouTubePlayer && typeof currentYouTubePlayer.destroy === 'function') {
-                try {
-                    currentYouTubePlayer.destroy();
-                } catch (e) {}
-                currentYouTubePlayer = null;
+            // Clear slideshow pairs timeouts
+            if (window.pairTimeoutIds) {
+                window.pairTimeoutIds.forEach(id => clearTimeout(id));
+                window.pairTimeoutIds = [];
+            }
+            // Clear PDF rotation interval
+            if (pdfRotationInterval) {
+                clearInterval(pdfRotationInterval);
+                pdfRotationInterval = null;
             }
         }
 
@@ -525,57 +573,47 @@ if ($version) $current_version = $version['version'];
             }
         }
 
-        function updateCurrentContent(data) {
-            currentContent = data.content;
-            currentSlides = data.slides || [];
-            currentLayoutData = null;
-            pdfDoc = null;
-            currentPageSet = 0;
-
-            if ((currentContent.content_type === 'slideshow' || currentContent.content_type === 'ppt') && currentContent.description) {
-                showDescription(currentContent.description);
-            } else {
-                showDescription('');
-            }
-
-            if (currentContent.content_type === 'slideshow' && currentContent.content_data) {
-                try {
-                    const parsed = JSON.parse(currentContent.content_data);
-                    if (parsed.type && parsed.images && parsed.type !== 'slideshow') {
-                        currentLayoutData = parsed;
-                        currentSlides = [];
-                    }
-                } catch (e) {}
-            }
-        }
-
         function switchMode(mode) {
             if (mode === currentMode) return;
             currentMode = mode;
-            document.getElementById('modeIndicator').innerHTML = `Current: ${mode.toUpperCase()}`;
+            window.location.href = '?mode=' + mode;
+        }
 
-            fetch(`?action=get_content&mode=${mode}&t=${Date.now()}`)
-                .then(response => response.json())
-                .then(data => {
-                    if (data.success && data.content) {
-                        updateCurrentContent(data);
-                        loadContent();
-                    }
-                })
-                .catch(error => console.error('Error:', error));
+        function startPolling() {
+            if (pollingInterval) clearInterval(pollingInterval);
 
-            document.getElementById('navDropdown').classList.remove('active');
+            pollingInterval = setInterval(function() {
+                fetch(window.location.pathname + '?action=check_version&mode=' + currentMode + '&version=' + currentVersion, {
+                        method: 'GET',
+                        headers: {
+                            'Accept': 'application/json'
+                        }
+                    })
+                    .then(response => {
+                        if (!response.ok) {
+                            throw new Error('HTTP ' + response.status);
+                        }
+                        return response.json();
+                    })
+                    .then(data => {
+                        if (data && data.has_update) {
+                            console.log('Update detected, refreshing to base URL');
+                            window.location.href = '?mode=' + currentMode;
+                        }
+                    })
+                    .catch(error => {
+                        // Don't log every error to avoid console spam
+                        // console.log('Polling check failed, will retry');
+                    });
+            }, 10000); // Increase to 10 seconds to reduce frequency
         }
 
         function loadContent() {
             const wrapper = document.getElementById('contentWrapper');
             clearAllTimeouts();
-
-            console.log('Loading content type:', currentContent.content_type);
+            localVideoUnlockAttempts = 0;
 
             if (!currentContent || !currentContent.content_type) {
-                console.error('Invalid content structure');
-                // Show mode-specific message when no content
                 wrapper.innerHTML = `
             <div class="message-container">
                 <div class="message-card memo">
@@ -586,33 +624,63 @@ if ($version) $current_version = $version['version'];
         `;
                 return;
             }
-            console.log('Loading content type:', currentContent.content_type);
 
-            if (!currentContent || !currentContent.content_type) {
-                console.error('Invalid content structure');
-                return;
+            // Show description
+            if ((currentContent.content_type === 'slideshow' || currentContent.content_type === 'ppt') && currentContent.description) {
+                showDescription(currentContent.description);
+            } else {
+                showDescription('');
             }
 
             if (currentContent.content_type === 'slideshow') {
-                if (currentLayoutData && currentLayoutData.type && currentLayoutData.images) {
-                    loadMultiImageLayout(currentLayoutData);
-                } else if (currentSlides && currentSlides.length > 0) {
+                // First priority: Use layout data from PHP if available
+                if (currentLayoutData && currentLayoutData.type && currentLayoutData.type !== 'slideshow') {
+                    console.log('Loading layout from PHP:', currentLayoutData);
+                    // For multi-image layouts (2-image, 3-image, 4-image), use slideshow pairs
+                    if (currentLayoutData.type === '2-image' || currentLayoutData.type === '3-image' || currentLayoutData.type === '4-image') {
+                        loadSlideshowPairs(currentLayoutData);
+                    } else {
+                        loadMultiImageLayout(currentLayoutData);
+                    }
+                    return;
+                }
+
+                // Check if we have slides from DB (traditional slideshow)
+                if (currentSlides && currentSlides.length > 0) {
                     loadSlideshow();
-                } else {
-                    try {
-                        const parsed = JSON.parse(currentContent.content_data);
-                        if (parsed.images && parsed.images.length > 0) {
-                            if (parsed.type && parsed.type !== 'slideshow') {
-                                loadMultiImageLayout(parsed);
-                            } else {
-                                currentSlides = parsed.images;
-                                loadSlideshow();
-                            }
+                    return;
+                }
+
+                // Try to parse content_data
+                try {
+                    const parsed = typeof currentContent.content_data === 'string' ?
+                        JSON.parse(currentContent.content_data) :
+                        currentContent.content_data;
+
+                    console.log('Parsed content_data:', parsed);
+
+                    if (parsed) {
+                        // Check if it's a multi-image layout
+                        if (parsed.type && (parsed.type === '2-image' || parsed.type === '3-image' || parsed.type === '4-image') && parsed.images && parsed.images.length > 0) {
+                            console.log('Detected multi-image layout from content_data');
+                            loadSlideshowPairs(parsed);
                             return;
                         }
-                    } catch (e) {}
-                    loadMessage();
+                        // Check if it's a regular slideshow with images array
+                        else if (parsed.images && parsed.images.length > 0) {
+                            console.log('Detected slideshow images from content_data');
+                            currentSlides = parsed.images;
+                            loadSlideshow();
+                            return;
+                        }
+                    }
+                } catch (e) {
+                    console.log('Failed to parse content_data:', e);
                 }
+
+                // Final fallback
+                console.log('No valid slideshow data found, showing message');
+                loadMessage();
             } else if (currentContent.content_type === 'youtube') {
                 loadYouTube();
             } else if (currentContent.content_type === 'local_video') {
@@ -628,7 +696,6 @@ if ($version) $current_version = $version['version'];
 
         function loadSlideshow() {
             const wrapper = document.getElementById('contentWrapper');
-
             if (!currentSlides || currentSlides.length === 0) {
                 loadMessage();
                 return;
@@ -648,7 +715,6 @@ if ($version) $current_version = $version['version'];
 
             let currentIndex = 0;
             const slides = document.querySelectorAll('.slide-image');
-
             if (slides.length === 0) {
                 loadMessage();
                 return;
@@ -676,102 +742,201 @@ if ($version) $current_version = $version['version'];
             }
         }
 
-        function loadMultiImageLayout(layoutData) {
+        function loadSlideshowPairs(layoutData) {
             const wrapper = document.getElementById('contentWrapper');
-            const layoutType = layoutData.type;
             const images = layoutData.images || [];
+            const imagesPerView = layoutData.type === '2-image' ? 2 : (layoutData.type === '3-image' ? 3 : 4);
+
+            console.log('Loading slideshow pairs:', imagesPerView, 'images per view, Total images:', images.length);
 
             if (images.length === 0) {
                 loadMessage();
                 return;
             }
 
-            let html = '';
-            const gap = 10;
-            const padding = 10;
+            let currentPairIndex = 0;
+            let timeoutIds = [];
 
-            if (layoutType === '4-image') {
-                html = `<div style="display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; width: 100vw; height: 100vh; gap: ${gap}px; padding: ${padding}px; background: #000; box-sizing: border-box;">`;
-            } else {
-                const columns = layoutType === '2-image' ? '1fr 1fr' : '1fr 1fr 1fr';
-                html = `<div style="display: grid; grid-template-columns: ${columns}; width: 100vw; height: 100vh; gap: ${gap}px; padding: ${padding}px; background: #000; box-sizing: border-box;">`;
+            // Calculate how many pairs we need
+            const totalPairs = Math.ceil(images.length / imagesPerView);
+
+            function displayPair(pairIndex) {
+                const startIdx = pairIndex * imagesPerView;
+                const endIdx = Math.min(startIdx + imagesPerView, images.length);
+                const currentImages = images.slice(startIdx, endIdx);
+
+                console.log(`Displaying pair ${pairIndex + 1}/${totalPairs}, images ${startIdx + 1}-${endIdx} of ${images.length}`);
+
+                let html = '';
+                const gap = 15;
+                const padding = 20;
+
+                // Create grid based on layout type
+                if (layoutData.type === '4-image') {
+                    html = `<div style="display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; width: 100vw; height: 100vh; gap: ${gap}px; padding: ${padding}px; background: #000; box-sizing: border-box;">`;
+                } else if (layoutData.type === '2-image') {
+                    html = `<div style="display: grid; grid-template-columns: 1fr 1fr; width: 100vw; height: 100vh; gap: ${gap}px; padding: ${padding}px; background: #000; box-sizing: border-box;">`;
+                } else if (layoutData.type === '3-image') {
+                    html = `<div style="display: grid; grid-template-columns: 1fr 1fr 1fr; width: 100vw; height: 100vh; gap: ${gap}px; padding: ${padding}px; background: #000; box-sizing: border-box;">`;
+                } else {
+                    html = `<div style="display: grid; grid-template-columns: 1fr 1fr; width: 100vw; height: 100vh; gap: ${gap}px; padding: ${padding}px; background: #000; box-sizing: border-box;">`;
+                }
+
+                // Add images for this pair
+                for (let i = 0; i < imagesPerView; i++) {
+                    if (i < currentImages.length) {
+                        let imagePath = currentImages[i].path || currentImages[i].image_path;
+                        if (!imagePath) {
+                            console.error('No image path for index', i);
+                            continue;
+                        }
+
+                        // Fix path
+                        imagePath = imagePath.replace(/^\/+/, '');
+                        if (!imagePath.startsWith('uploads/')) {
+                            imagePath = 'uploads/' + imagePath;
+                        }
+
+                        html += `<div style="display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; overflow: hidden; background: #0a0a0a; border-radius: 16px;">
+                            <img src="/${imagePath}" 
+                                 style="width: 100%; height: 100%; object-fit: contain;" 
+                                 onerror="this.onerror=null; this.parentElement.style.background='#333'; this.parentElement.innerHTML='<div style=\'color:#666;text-align:center;padding:20px;\'>⚠️<br>Image ${startIdx + i + 1}<br>Failed to load</div>';">
+                        </div>`;
+                    } else {
+                        // Empty slot
+                        html += `<div style="display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; background: #2a2a2a; border-radius: 16px; color: #666;">
+                            <div style="text-align: center;">Empty Slot</div>
+                        </div>`;
+                    }
+                }
+
+                html += `</div>`;
+                wrapper.innerHTML = html;
+
+                // Schedule next pair
+                const duration = (currentImages[0]?.duration || 10) * 1000; // Use individual slide duration or default 10 seconds
+                const timeoutId = setTimeout(() => {
+                    const nextPair = (pairIndex + 1) % totalPairs;
+                    displayPair(nextPair);
+                }, duration);
+
+                timeoutIds.push(timeoutId);
             }
 
-            images.forEach(image => {
-                let imagePath = image.path;
-                if (!imagePath.startsWith('/') && !imagePath.startsWith('http')) {
-                    imagePath = '/' + imagePath;
+            // Clear previous timeouts when function is called again
+            if (window.pairTimeoutIds) {
+                window.pairTimeoutIds.forEach(id => clearTimeout(id));
+            }
+            window.pairTimeoutIds = timeoutIds;
+
+            // Start displaying from first pair
+            displayPair(0);
+
+            // Set overall timeout to move to next content after display_duration
+            if (currentContent.display_duration && currentContent.display_duration > 0) {
+                const overallTimeoutId = setTimeout(() => {
+                    console.log('Overall display duration expired, moving to next content');
+                    // Clear all pair timeouts
+                    if (window.pairTimeoutIds) {
+                        window.pairTimeoutIds.forEach(id => clearTimeout(id));
+                    }
+                    loadNextContent();
+                }, currentContent.display_duration * 1000);
+                currentTimeouts.push(overallTimeoutId);
+                window.pairTimeoutIds.push(overallTimeoutId);
+            }
+        }
+
+        function loadMultiImageLayout(layoutData) {
+            const wrapper = document.getElementById('contentWrapper');
+            const layoutType = layoutData.type;
+            const images = layoutData.images || [];
+
+            console.log('Loading multi-image layout:', layoutType, 'Images:', images);
+
+            if (images.length === 0) {
+                console.log('No images found for multi-image layout, falling back to message');
+                loadMessage();
+                return;
+            }
+
+            let html = '';
+            const gap = 15;
+            const padding = 20;
+
+            // Determine grid layout based on type
+            if (layoutType === '4-image') {
+                html = `<div style="display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; width: 100vw; height: 100vh; gap: ${gap}px; padding: ${padding}px; background: #000; box-sizing: border-box;">`;
+            } else if (layoutType === '2-image') {
+                html = `<div style="display: grid; grid-template-columns: 1fr 1fr; width: 100vw; height: 100vh; gap: ${gap}px; padding: ${padding}px; background: #000; box-sizing: border-box;">`;
+            } else if (layoutType === '3-image') {
+                html = `<div style="display: grid; grid-template-columns: 1fr 1fr 1fr; width: 100vw; height: 100vh; gap: ${gap}px; padding: ${padding}px; background: #000; box-sizing: border-box;">`;
+            } else {
+                html = `<div style="display: grid; grid-template-columns: 1fr 1fr; width: 100vw; height: 100vh; gap: ${gap}px; padding: ${padding}px; background: #000; box-sizing: border-box;">`;
+            }
+
+            // Process each image
+            images.forEach((image, index) => {
+                // Get the image path
+                let imagePath = image.path || image.image_path;
+
+                if (!imagePath) {
+                    console.error('No image path found for image:', image);
+                    return;
                 }
-                imagePath = imagePath.replace('uploads/uploads/', 'uploads/');
-                html += `<div style="display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; overflow: hidden;">
-                            <img src="${imagePath}" style="width: 100%; height: 100%; object-fit: contain;" onerror="this.style.display='none'">
-                        </div>`;
+
+                // Fix the path - remove any leading slashes and ensure it's relative
+                imagePath = imagePath.replace(/^\/+/, '');
+
+                // If path doesn't start with 'uploads/', add it
+                if (!imagePath.startsWith('uploads/')) {
+                    imagePath = 'uploads/' + imagePath;
+                }
+
+                console.log(`Image ${index + 1} final path:`, imagePath);
+
+                html += `<div style="display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; overflow: hidden; background: #0a0a0a; border-radius: 16px;">
+                    <img src="/${imagePath}" 
+                         style="width: 100%; height: 100%; object-fit: contain;" 
+                         onerror="this.onerror=null; this.parentElement.style.background='#333'; this.parentElement.innerHTML='<div style=\'color:#666;text-align:center;padding:20px;\'>⚠️<br>Image ${index + 1}<br>Failed to load</div>';">
+                </div>`;
             });
+
+            // Fill empty slots for 4-image layout
+            if (layoutType === '4-image' && images.length < 4) {
+                for (let i = images.length; i < 4; i++) {
+                    html += `<div style="display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; background: #2a2a2a; border-radius: 16px; color: #666;">
+                        <div style="text-align: center;">Empty Slot</div>
+                    </div>`;
+                }
+            }
+
             html += `</div>`;
             wrapper.innerHTML = html;
 
+            // Set timeout to move to next content
             if (currentContent.display_duration && currentContent.display_duration > 0) {
                 const timeoutId = setTimeout(() => loadNextContent(), currentContent.display_duration * 1000);
                 currentTimeouts.push(timeoutId);
             }
         }
 
-        function loadLocalVideo() {
+        function loadYouTube() {
             const wrapper = document.getElementById('contentWrapper');
-            let videoData;
+            let videoUrl = currentContent.content_data;
+            let videoId = extractYouTubeId(videoUrl);
 
-            try {
-                videoData = JSON.parse(currentContent.content_data);
-            } catch (e) {
-                videoData = {
-                    file_path: currentContent.content_data
-                };
-            }
-
-            let videoPath = videoData.file_path;
-            if (!videoPath.startsWith('/') && !videoPath.startsWith('http')) {
-                videoPath = '/' + videoPath;
-            }
-
-            videoPath = videoPath.replace('uploads/uploads/', 'uploads/');
+            const embedUrl = `https://www.youtube.com/embed/${videoId}?autoplay=1&loop=1&playlist=${videoId}&controls=0&rel=0&modestbranding=1&playsinline=1`;
 
             wrapper.innerHTML = `
-                <div class="local-video-container">
-                    <video id="localVideo" 
-                           autoplay 
-                           loop 
-                           playsinline 
-                           muted
-                           style="width:100%;height:100%;object-fit:contain;">
-                        <source src="${videoPath}" type="video/mp4">
-                        Your browser does not support the video tag.
-                    </video>
+                <div class="youtube-container">
+                    <iframe class="youtube-iframe" 
+                            src="${embedUrl}"
+                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                            allowfullscreen>
+                    </iframe>
                 </div>
             `;
-
-            const video = document.getElementById('localVideo');
-
-            if (video) {
-                video.play().catch(err => console.log('Initial autoplay failed:', err));
-
-                // Aggressive unmute strategy for TVs (no remote)
-                let attempts = 0;
-                const tryUnmute = () => {
-                    if (attempts >= 6) return;
-                    attempts++;
-
-                    video.muted = false;
-                    video.volume = 1.0;
-                    video.play().catch(() => {});
-                    console.log(`Unmute attempt ${attempts}/6`);
-                };
-
-                setTimeout(tryUnmute, 600);
-                setTimeout(tryUnmute, 1800);
-                setTimeout(tryUnmute, 3500);
-                setTimeout(tryUnmute, 6000);
-                setTimeout(tryUnmute, 9000);
-            }
 
             if (currentContent.display_duration && currentContent.display_duration > 0) {
                 const timeoutId = setTimeout(() => {
@@ -782,87 +947,92 @@ if ($version) $current_version = $version['version'];
             }
         }
 
-        function loadYouTube() {
+        function loadLocalVideo() {
             const wrapper = document.getElementById('contentWrapper');
-            const videoId = extractYouTubeId(currentContent.content_data);
-            const containerId = 'yt-player-' + Date.now();
+            let videoData;
 
-            wrapper.innerHTML = `<div id="${containerId}" style="width:100%;height:100%;background:#000;"></div>`;
-
-            const createPlayer = () => {
-                if (currentYouTubePlayer) {
-                    try {
-                        currentYouTubePlayer.destroy();
-                    } catch (e) {}
-                }
-
-                currentYouTubePlayer = new YT.Player(containerId, {
-                    height: '100%',
-                    width: '100%',
-                    videoId: videoId,
-                    playerVars: {
-                        'autoplay': 1,
-                        'mute': 1,
-                        'controls': 0,
-                        'rel': 0,
-                        'modestbranding': 1,
-                        'iv_load_policy': 3,
-                        'enablejsapi': 1,
-                        'playsinline': 1,
-                        'origin': window.location.origin
-                    },
-                    events: {
-                        'onReady': function(event) {
-                            console.log('YouTube player ready, playing muted');
-                            event.target.playVideo();
-
-                            // Aggressive unmute attempts for YouTube
-                            let attempts = 0;
-                            const tryUnmute = () => {
-                                if (attempts >= 6) return;
-                                attempts++;
-                                try {
-                                    event.target.unMute();
-                                    event.target.setVolume(100);
-                                    console.log(`YouTube unmute attempt ${attempts}/6`);
-                                } catch (e) {}
-                            };
-
-                            setTimeout(tryUnmute, 600);
-                            setTimeout(tryUnmute, 1800);
-                            setTimeout(tryUnmute, 3500);
-                            setTimeout(tryUnmute, 6000);
-                            setTimeout(tryUnmute, 9000);
-                        },
-                        'onStateChange': function(event) {
-                            if (event.data === YT.PlayerState.ENDED) {
-                                console.log('Video ended, moving to next content');
-                                loadNextContent();
-                            }
-                        },
-                        'onError': function(event) {
-                            console.error('YouTube error:', event.data);
-                            loadNextContent();
-                        }
-                    }
-                });
-            };
-
-            if (typeof YT !== 'undefined' && YT.Player) {
-                createPlayer();
-            } else {
-                window._pendingYouTubeCreate = createPlayer;
-                if (!document.getElementById('yt-api-script')) {
-                    const tag = document.createElement('script');
-                    tag.id = 'yt-api-script';
-                    tag.src = 'https://www.youtube.com/iframe_api';
-                    document.head.appendChild(tag);
-                }
+            try {
+                videoData = typeof currentContent.content_data === 'string' ?
+                    JSON.parse(currentContent.content_data) :
+                    currentContent.content_data;
+            } catch (e) {
+                videoData = {
+                    file_path: currentContent.content_data
+                };
             }
 
+            let videoPath = videoData.file_path || videoData.path;
+            if (!videoPath) {
+                console.error('No video path found');
+                loadMessage();
+                return;
+            }
+
+            // Clean up the path
+            videoPath = videoPath.replace(/^\/+/, '');
+
+            // Ensure it has the correct prefix
+            if (!videoPath.startsWith('uploads/') && !videoPath.startsWith('videos/')) {
+                videoPath = 'uploads/videos/' + videoPath.replace(/^uploads\/?/, '');
+            }
+
+            console.log('Loading video from path:', videoPath);
+
+            wrapper.innerHTML = `
+        <div class="local-video-container">
+            <video id="localVideo" autoplay playsinline loop controls style="width:100%;height:100%;object-fit:contain;">
+                <source src="/${videoPath}" type="video/mp4">
+                Your browser does not support the video tag.
+            </video>
+        </div>
+    `;
+
+            const video = document.getElementById('localVideo');
+            if (video) {
+                // Load the video
+                video.load();
+
+                // Try to play with sound
+                const playVideo = () => {
+                    video.muted = false;
+                    video.volume = 1.0;
+                    video.play().catch(e => {
+                        console.log('Play failed:', e);
+                        // Try with muted first if autoplay is blocked
+                        video.muted = true;
+                        video.play().then(() => {
+                            console.log('Playing muted, will try to unmute');
+                            // Try to unmute after a short delay
+                            setTimeout(() => {
+                                video.muted = false;
+                                video.play().catch(() => {});
+                            }, 1000);
+                        }).catch(err => console.log('Even muted play failed:', err));
+                    });
+                };
+
+                // Wait for video to be ready
+                video.addEventListener('canplay', playVideo);
+                video.addEventListener('error', (e) => {
+                    console.error('Video error:', e);
+                    console.error('Video error code:', video.error ? video.error.code : 'unknown');
+                    wrapper.innerHTML = `<div class="message-container"><div class="message-card memo"><div class="message-icon">🎬</div><div class="message-text">Video failed to load<br><small style="font-size:14px;">Path: /${videoPath}</small></div></div></div>`;
+                    // Still schedule next content after duration
+                    if (currentContent.display_duration && currentContent.display_duration > 0) {
+                        const timeoutId = setTimeout(() => loadNextContent(), currentContent.display_duration * 1000);
+                        currentTimeouts.push(timeoutId);
+                    }
+                });
+            }
+
+            // Set timeout to move to next content
             if (currentContent.display_duration && currentContent.display_duration > 0) {
                 const timeoutId = setTimeout(() => {
                     console.log('Video duration expired, loading next content');
+                    const video = document.getElementById('localVideo');
+                    if (video) {
+                        video.pause();
+                    }
                     loadNextContent();
                 }, currentContent.display_duration * 1000);
                 currentTimeouts.push(timeoutId);
@@ -888,30 +1058,32 @@ if ($version) $current_version = $version['version'];
             filePath = filePath.replace('uploads/uploads/', 'uploads/');
 
             const pdfUrl = window.location.origin + filePath;
-
-            wrapper.innerHTML = `
-                <div class="pdf-container">
-                    <div class="pdf-loading">Loading PDF...</div>
-                </div>
-            `;
+            wrapper.innerHTML = `<div class="pdf-container"><div class="pdf-loading">Loading PDF...</div></div>`;
 
             pdfjsLib.getDocument(pdfUrl).promise.then(function(pdf) {
                 pdfDoc = pdf;
                 totalPages = pdf.numPages;
                 currentPageSet = 0;
-                console.log('PDF loaded. Total pages:', totalPages);
-                displayPDFPageSet();
-                scheduleNextPDFSet();
+
+                // Clear any existing rotation interval
+                if (pdfRotationInterval) clearInterval(pdfRotationInterval);
+
+                if (totalPages === 1) {
+                    // Single page - display centered
+                    displaySinglePDFPage();
+                    // Schedule next content after display_duration
+                    if (currentContent.display_duration && currentContent.display_duration > 0) {
+                        const timeoutId = setTimeout(() => loadNextContent(), currentContent.display_duration * 1000);
+                        currentTimeouts.push(timeoutId);
+                    }
+                } else {
+                    // Multiple pages - show 2 pages at a time
+                    displayPDFPageSet();
+                    startPDFRotation();
+                }
             }).catch(function(error) {
                 console.error('Error loading PDF:', error);
-                wrapper.innerHTML = `
-                    <div class="message-container">
-                        <div class="message-card memo">
-                            <div class="message-icon">📄</div>
-                            <div class="message-text">Error loading PDF. Please check the file.</div>
-                        </div>
-                    </div>
-                `;
+                wrapper.innerHTML = `<div class="message-container"><div class="message-card memo"><div class="message-icon">📄</div><div class="message-text">Error loading PDF</div></div></div>`;
                 if (currentContent.display_duration > 0) {
                     const timeoutId = setTimeout(() => loadNextContent(), currentContent.display_duration * 1000);
                     currentTimeouts.push(timeoutId);
@@ -919,59 +1091,219 @@ if ($version) $current_version = $version['version'];
             });
         }
 
+        function startPDFRotation() {
+            // Clear any existing rotation interval
+            if (pdfRotationInterval) clearInterval(pdfRotationInterval);
+
+            // Rotate every 20 seconds (20000 ms)
+            pdfRotationInterval = setInterval(() => {
+                if (pdfDoc) {
+                    const startPage = currentPageSet * pagesPerView + 1;
+                    const endPage = Math.min(startPage + pagesPerView - 1, totalPages);
+
+                    // Check if we've reached the end
+                    if (endPage >= totalPages) {
+                        // Loop back to beginning
+                        currentPageSet = 0;
+                    } else {
+                        currentPageSet++;
+                    }
+                    displayPDFPageSet();
+                }
+            }, 20000); // 20 seconds
+
+            currentTimeouts.push(pdfRotationInterval);
+
+            // Set overall timeout to move to next content after display_duration
+            if (currentContent.display_duration && currentContent.display_duration > 0) {
+                const overallTimeoutId = setTimeout(() => {
+                    // Stop rotation
+                    if (pdfRotationInterval) clearInterval(pdfRotationInterval);
+                    loadNextContent();
+                }, currentContent.display_duration * 1000);
+                currentTimeouts.push(overallTimeoutId);
+            }
+        }
+
+        function displaySinglePDFPage() {
+            if (!pdfDoc) return;
+
+            const wrapper = document.getElementById('contentWrapper');
+            wrapper.innerHTML = '<div class="pdf-container"><div class="pdf-loading">Rendering page...</div></div>';
+
+            pdfDoc.getPage(1).then(function(page) {
+                // Get container dimensions
+                const container = wrapper.querySelector('.pdf-container') || wrapper;
+                const containerWidth = window.innerWidth - 60;
+                const containerHeight = window.innerHeight - 100;
+
+                // Calculate scale to fit page in container
+                const viewport = page.getViewport({
+                    scale: 1
+                });
+                const scaleX = containerWidth / viewport.width;
+                const scaleY = containerHeight / viewport.height;
+                const scale = Math.min(scaleX, scaleY, 2.5); // Max scale 2.5 for quality
+
+                const scaledViewport = page.getViewport({
+                    scale: scale
+                });
+
+                // Create canvas with higher quality
+                const canvas = document.createElement('canvas');
+                const context = canvas.getContext('2d');
+                canvas.width = scaledViewport.width;
+                canvas.height = scaledViewport.height;
+                canvas.style.width = 'auto';
+                canvas.style.height = 'auto';
+                canvas.style.maxWidth = '100%';
+                canvas.style.maxHeight = '100%';
+                canvas.style.objectFit = 'contain';
+
+                wrapper.innerHTML = `
+            <div class="pdf-container" style="display: flex; align-items: center; justify-content: center; background: #000;">
+                <div style="display: flex; align-items: center; justify-content: center; width: 100%; height: 100%;">
+                </div>
+            </div>
+        `;
+
+                const innerDiv = wrapper.querySelector('div div');
+                innerDiv.appendChild(canvas);
+
+                page.render({
+                    canvasContext: context,
+                    viewport: scaledViewport
+                });
+            });
+        }
+
         function displayPDFPageSet() {
             if (!pdfDoc) return;
 
             const startPage = currentPageSet * pagesPerView + 1;
-            const endPage = Math.min(startPage + pagesPerView - 1, totalPages);
+            let endPage = Math.min(startPage + pagesPerView - 1, totalPages);
+
+            // Ensure we show 2 pages even if last set has only 1 page
+            // For the last page, show it centered
+            const isLastSet = startPage > totalPages;
 
             if (startPage > totalPages) {
-                loadNextContent();
+                // Loop back to beginning
+                currentPageSet = 0;
+                displayPDFPageSet();
                 return;
             }
 
             const wrapper = document.getElementById('contentWrapper');
-            let html = '<div class="pdf-container"><div class="pdf-horizontal-grid">';
+            wrapper.innerHTML = '<div class="pdf-container"><div class="pdf-loading">Rendering pages...</div></div>';
+
+            const container = wrapper.querySelector('.pdf-container');
+            container.innerHTML = '';
+            container.style.display = 'flex';
+            container.style.flexDirection = 'column';
+            container.style.background = '#000';
+
+            // If this is the last set and only has 1 page, show it centered
+            const isSinglePageInSet = (endPage - startPage + 1) === 1;
+
+            if (isSinglePageInSet) {
+                container.style.alignItems = 'center';
+                container.style.justifyContent = 'center';
+            } else {
+                container.style.flexDirection = 'row';
+                container.style.gap = '20px';
+                container.style.padding = '30px';
+                container.style.alignItems = 'center';
+                container.style.justifyContent = 'center';
+            }
 
             const pagePromises = [];
+            const pageElements = [];
+
             for (let pageNum = startPage; pageNum <= endPage; pageNum++) {
+                const pageDiv = document.createElement('div');
+                if (isSinglePageInSet) {
+                    pageDiv.style.display = 'flex';
+                    pageDiv.style.alignItems = 'center';
+                    pageDiv.style.justifyContent = 'center';
+                    pageDiv.style.width = '100%';
+                    pageDiv.style.height = '100%';
+                } else {
+                    pageDiv.style.flex = '1';
+                    pageDiv.style.display = 'flex';
+                    pageDiv.style.alignItems = 'center';
+                    pageDiv.style.justifyContent = 'center';
+                    pageDiv.style.background = '#fff';
+                    pageDiv.style.borderRadius = '16px';
+                    pageDiv.style.overflow = 'hidden';
+                    pageDiv.style.boxShadow = '0 8px 32px rgba(0,0,0,0.4)';
+                    pageDiv.style.minHeight = '0';
+                }
+                container.appendChild(pageDiv);
+                pageElements.push(pageDiv);
+
                 pagePromises.push(
                     pdfDoc.getPage(pageNum).then(function(page) {
-                        const containerWidth = window.innerWidth / pagesPerView - 30;
-                        const viewport = page.getViewport({
-                            scale: 1
-                        });
-                        const scale = containerWidth / viewport.width;
-                        const scaledViewport = page.getViewport({
-                            scale: scale
-                        });
-                        const canvas = document.createElement('canvas');
-                        const context = canvas.getContext('2d');
-                        canvas.width = scaledViewport.width;
-                        canvas.height = scaledViewport.height;
-                        return page.render({
-                            canvasContext: context,
-                            viewport: scaledViewport
-                        }).promise.then(function() {
-                            return {
-                                pageNum: pageNum,
-                                imageData: canvas.toDataURL()
-                            };
-                        });
+                        return {
+                            page: page,
+                            pageNum: pageNum
+                        };
                     })
                 );
             }
 
             Promise.all(pagePromises).then(function(pagesData) {
-                let innerHtml = '<div class="pdf-container"><div class="pdf-horizontal-grid">';
-                pagesData.forEach(function(pageData) {
-                    innerHtml += `<div class="pdf-page"><img src="${pageData.imageData}" alt="Page ${pageData.pageNum}"></div>`;
+                pagesData.forEach(function(pageData, idx) {
+                    const page = pageData.page;
+                    const pageDiv = pageElements[idx];
+
+                    // Calculate scale based on container
+                    let scale;
+                    if (isSinglePageInSet) {
+                        const containerWidth = window.innerWidth - 60;
+                        const containerHeight = window.innerHeight - 100;
+                        const viewport = page.getViewport({
+                            scale: 1
+                        });
+                        const scaleX = containerWidth / viewport.width;
+                        const scaleY = containerHeight / viewport.height;
+                        scale = Math.min(scaleX, scaleY, 2.5);
+                    } else {
+                        const containerWidth = (window.innerWidth / 2) - 60;
+                        const viewport = page.getViewport({
+                            scale: 1
+                        });
+                        scale = (containerWidth / viewport.width) * 1.2; // Slightly larger for better quality
+                        scale = Math.min(scale, 2.0);
+                    }
+
+                    const scaledViewport = page.getViewport({
+                        scale: scale
+                    });
+
+                    const canvas = document.createElement('canvas');
+                    const context = canvas.getContext('2d');
+                    canvas.width = scaledViewport.width;
+                    canvas.height = scaledViewport.height;
+                    canvas.style.width = '100%';
+                    canvas.style.height = 'auto';
+                    canvas.style.maxWidth = '100%';
+                    canvas.style.maxHeight = '100%';
+                    canvas.style.objectFit = 'contain';
+
+                    pageDiv.appendChild(canvas);
+
+                    page.render({
+                        canvasContext: context,
+                        viewport: scaledViewport
+                    });
                 });
-                for (let i = pagesData.length; i < pagesPerView; i++) {
-                    innerHtml += `<div class="pdf-page" style="background: #333; display: flex; align-items: center; justify-content: center; color: #666;"><span>End</span></div>`;
-                }
-                innerHtml += `</div><div class="pdf-page-number">Pages ${startPage}-${endPage} of ${totalPages}</div></div>`;
-                wrapper.innerHTML = innerHtml;
+
+                // Add page indicator
+                const pageIndicator = document.createElement('div');
+                pageIndicator.className = 'pdf-page-number';
+                pageIndicator.textContent = `Pages ${startPage}-${endPage} of ${totalPages}`;
+                container.appendChild(pageIndicator);
             });
         }
 
@@ -998,7 +1330,6 @@ if ($version) $current_version = $version['version'];
                 memo: '📝',
                 congratulation: '🎉'
             };
-
             wrapper.innerHTML = `<div class="message-container"><div class="message-card ${messageType}"><div class="message-icon">${icons[messageType] || '📝'}</div><div class="message-text">${escapeHtml(messageText)}</div></div></div>`;
 
             if (currentContent.display_duration && currentContent.display_duration > 0) {
@@ -1008,25 +1339,15 @@ if ($version) $current_version = $version['version'];
         }
 
         function loadNextContent() {
-            const nextId = parseInt(currentContent.next_content_id);
-            console.log('Loading next content, next_content_id:', currentContent.next_content_id);
-
-            if (!isNaN(nextId) && nextId > 0) {
-                fetch(`?action=get_content&id=${nextId}&t=${Date.now()}`)
-                    .then(response => response.json())
-                    .then(data => {
-                        if (data.success && data.content) {
-                            updateCurrentContent(data);
-                            setTimeout(() => loadContent(), 200);
-                        } else {
-                            console.log('Next content not found, waiting for admin');
-                        }
-                    })
-                    .catch(error => {
-                        console.error('Error loading next content:', error);
-                    });
+            const nextId = currentContent.next_content_id;
+            if (nextId && !isNaN(parseInt(nextId)) && parseInt(nextId) > 0) {
+                console.log('Moving to next content ID:', nextId);
+                // Navigate to next content but keep mode
+                window.location.href = '?id=' + nextId + '&mode=' + currentMode;
             } else {
-                console.log('Content chain ended, waiting for new content from admin');
+                console.log('End of content chain, restarting from beginning');
+                // Go back to base URL to start from the first content
+                window.location.href = '?mode=' + currentMode;
             }
         }
 
@@ -1049,68 +1370,28 @@ if ($version) $current_version = $version['version'];
             return div.innerHTML;
         }
 
-        function startPolling() {
-            if (pollingInterval) clearInterval(pollingInterval);
-
-            pollingInterval = setInterval(function() {
-                fetch(`?action=check_version&mode=${currentMode}&version=${currentVersion}`)
-                    .then(response => response.json())
-                    .then(data => {
-                        if (data.has_update) {
-                            console.log('Update detected, refreshing content');
-                            currentVersion = data.new_version;
-                            fetch(`?action=get_content&mode=${currentMode}&t=${Date.now()}`)
-                                .then(response => response.json())
-                                .then(data => {
-                                    if (data.success && data.content) {
-                                        updateCurrentContent(data);
-                                        loadContent();
-                                    }
-                                })
-                                .catch(error => console.error('Fetch error:', error));
-                        }
-                    })
-                    .catch(error => console.error('Polling error:', error));
-            }, 5000);
-        }
-
-        window.onYouTubeIframeAPIReady = function() {
-            console.log('YouTube API ready');
-            if (window._pendingYouTubeCreate) {
-                const create = window._pendingYouTubeCreate;
-                window._pendingYouTubeCreate = null;
-                create();
-            }
-        };
-
+        // Initialize
         document.addEventListener('DOMContentLoaded', function() {
-            if ((currentContent.content_type === 'slideshow' || currentContent.content_type === 'ppt') && currentContent.description) {
-                showDescription(currentContent.description);
-            }
-
             loadContent();
             startPolling();
 
             const navDropdown = document.getElementById('navDropdown');
             let hoverTimer;
-
             navDropdown.addEventListener('mouseenter', function() {
                 clearTimeout(hoverTimer);
                 this.style.transform = 'translateX(0)';
             });
-
             navDropdown.addEventListener('mouseleave', function() {
                 hoverTimer = setTimeout(() => {
                     if (!this.classList.contains('active')) {
-                        this.style.transform = 'translateX(-98%)';
+                        this.style.transform = 'translateX(-96%)';
                     }
                 }, 1000);
             });
-
             navDropdown.addEventListener('click', function(e) {
-                if (!e.target.classList.contains('mode-option')) {
+                if (!e.target.closest('.mode-option')) {
                     this.classList.toggle('active');
-                    this.style.transform = this.classList.contains('active') ? 'translateX(0)' : 'translateX(-98%)';
+                    this.style.transform = this.classList.contains('active') ? 'translateX(0)' : 'translateX(-96%)';
                 }
             });
         });
