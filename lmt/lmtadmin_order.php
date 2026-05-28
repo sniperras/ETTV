@@ -14,6 +14,7 @@ try {
 }
 
 // Handle save order
+// Handle save order
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_order'])) {
     try {
         $order_data = json_decode($_POST['order_data'], true);
@@ -21,40 +22,57 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_order'])) {
         if ($order_data && is_array($order_data)) {
             $pdo->beginTransaction();
 
+            // Reset all display_order to NULL first
+            $stmt = $pdo->prepare("UPDATE content SET display_order = NULL WHERE admin_role = 'lmt'");
+            $stmt->execute();
+
+            // Update display_order for all items
             foreach ($order_data as $index => $item) {
                 $stmt = $pdo->prepare("UPDATE content SET display_order = ? WHERE id = ? AND admin_role = 'lmt'");
                 $stmt->execute([$index, $item['id']]);
             }
 
+            // Reset next_content_id
             $stmt = $pdo->prepare("UPDATE content SET next_content_id = NULL WHERE admin_role = 'lmt'");
             $stmt->execute();
 
-            $active_items = [];
-            foreach ($order_data as $item) {
-                $stmt = $pdo->prepare("SELECT is_active FROM content WHERE id = ?");
-                $stmt->execute([$item['id']]);
-                $content = $stmt->fetch();
-                if ($content && $content['is_active'] == 1) {
-                    $active_items[] = $item['id'];
+            // Get all content ordered by new display_order
+            $stmt = $pdo->prepare("SELECT id, is_active FROM content WHERE admin_role = 'lmt' ORDER BY display_order ASC, id ASC");
+            $stmt->execute();
+            $all_content = $stmt->fetchAll();
+
+            // Build chain only for active content in order
+            $active_ids = [];
+            foreach ($all_content as $item) {
+                if ($item['is_active'] == 1) {
+                    $active_ids[] = $item['id'];
                 }
             }
 
-            for ($i = 0; $i < count($active_items) - 1; $i++) {
+            for ($i = 0; $i < count($active_ids) - 1; $i++) {
                 $stmt = $pdo->prepare("UPDATE content SET next_content_id = ? WHERE id = ?");
-                $stmt->execute([$active_items[$i + 1], $active_items[$i]]);
+                $stmt->execute([$active_ids[$i + 1], $active_ids[$i]]);
             }
 
+            // Increment version to trigger TV refresh
             $stmt = $pdo->prepare("UPDATE content_version SET version = version + 1, last_update = NOW() WHERE admin_role = 'lmt'");
             $stmt->execute();
 
+            // Get and log the new version
+            $stmt = $pdo->prepare("SELECT version FROM content_version WHERE admin_role = 'lmt'");
+            $stmt->execute();
+            $new_version = $stmt->fetch();
+            error_log("New version after save: " . ($new_version ? $new_version['version'] : 'unknown'));
+
             $pdo->commit();
-            $_SESSION['flash_success'] = "Display order saved successfully! TV will update immediately.";
+            $_SESSION['flash_success'] = "Display order saved successfully! TV will update immediately (version: " . ($new_version ? $new_version['version'] : '?') . ")";
         }
     } catch (Exception $e) {
         $pdo->rollBack();
         $_SESSION['flash_error'] = "Error: " . $e->getMessage();
     }
 
+    // Redirect back to order page (NOT to base URL)
     header('Location: lmtadmin_order.php');
     exit();
 }
@@ -148,7 +166,12 @@ if (isset($_GET['delete_id'])) {
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['edit_duration'])) {
     try {
         $content_id = (int)$_POST['content_id'];
-        $new_duration = convertToSeconds($_POST['display_duration']);
+
+        if (isset($_POST['display_duration_custom']) && !empty($_POST['display_duration_custom'])) {
+            $new_duration = (int)$_POST['display_duration_custom'];
+        } else {
+            $new_duration = convertToSeconds($_POST['display_duration']);
+        }
 
         $stmt = $pdo->prepare("UPDATE content SET display_duration = ? WHERE id = ? AND admin_role = 'lmt'");
         $stmt->execute([$new_duration, $content_id]);
@@ -166,6 +189,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['edit_duration'])) {
 
 function convertToSeconds($duration_str)
 {
+    if (is_numeric($duration_str)) {
+        return (int)$duration_str;
+    }
+
     $duration_map = [
         '30s' => 30,
         '1m' => 60,
@@ -242,6 +269,7 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
     <title>LMT Display Order Manager - ET TV</title>
     <link rel="icon" type="image/png" href="../img/ethiopian_logo.ico">
     <style>
+        /* Your existing styles remain the same */
         * {
             margin: 0;
             padding: 0;
@@ -498,7 +526,7 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
             background: white;
             border-radius: 16px;
             padding: 30px;
-            max-width: 450px;
+            max-width: 500px;
             width: 90%;
             text-align: center;
             animation: modalSlideIn 0.3s ease-out;
@@ -717,7 +745,6 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
             z-index: 10;
         }
 
-        /* Video thumbnail preview */
         .video-thumbnail {
             width: 100%;
             height: 100%;
@@ -743,7 +770,6 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
             pointer-events: none;
         }
 
-        /* Audio Preview Styles */
         .audio-preview-container {
             width: 100%;
             height: 100%;
@@ -849,6 +875,54 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
                 transform: scaleY(0.5);
             }
         }
+
+        .custom-duration-input {
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid #e0e0e0;
+        }
+
+        .custom-duration-input label {
+            font-size: 12px;
+            color: #666;
+            margin-bottom: 5px;
+        }
+
+        .custom-duration-input input {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+        }
+
+        .duration-hint {
+            font-size: 11px;
+            color: #999;
+            margin-top: 5px;
+        }
+
+        .website-preview-container {
+            width: 100%;
+            height: 100%;
+            background: #fff;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .website-preview-iframe {
+            width: 100%;
+            height: 100%;
+            border: none;
+        }
+
+        .website-preview-info {
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 8px 15px;
+            font-size: 12px;
+            text-align: center;
+            flex-shrink: 0;
+        }
     </style>
 </head>
 
@@ -907,6 +981,8 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
                                     elseif ($content['content_type'] === 'message') echo '💬';
                                     elseif ($content['content_type'] === 'local_video') echo '🎬';
                                     elseif ($content['content_type'] === 'local_audio') echo '🎵';
+                                    elseif ($content['content_type'] === 'website') echo '🌐';
+                                    elseif ($content['content_type'] === 'pdf') echo '📑';
                                     else echo '📕';
                                     ?>
                                 </div>
@@ -994,6 +1070,11 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
                         <option value="24h">24 hours</option>
                     </select>
                 </div>
+                <div class="custom-duration-input">
+                    <label>🎯 Or enter custom duration (seconds):</label>
+                    <input type="number" name="display_duration_custom" id="editDurationCustom" placeholder="e.g., 45, 120, 300" min="1" max="86400">
+                    <div class="duration-hint">Enter any number of seconds (e.g., 45 = 45 seconds, 300 = 5 minutes)</div>
+                </div>
                 <div class="modal-buttons">
                     <button type="button" class="modal-btn modal-btn-cancel" onclick="closeEditModal()">Cancel</button>
                     <button type="submit" name="edit_duration" class="modal-btn modal-btn-confirm success">Save Changes</button>
@@ -1008,8 +1089,8 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
         let currentPdfPage = 1;
         let pdfRenderToken = 0;
         let currentPreviewInterval = null;
+        let currentVideoPreview = null;
 
-        // Auto-hide notifications
         setTimeout(function() {
             const successMsg = document.getElementById('successMsg');
             const errorMsg = document.getElementById('errorMsg');
@@ -1051,6 +1132,7 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
 
         function closeEditModal() {
             document.getElementById('editModal').classList.remove('active');
+            document.getElementById('editDurationCustom').value = '';
         }
 
         function showToggleModal(id, activate) {
@@ -1109,6 +1191,10 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
         function loadPreview(contentId) {
             const previewDiv = document.getElementById('previewContent');
             if (currentPreviewInterval) clearInterval(currentPreviewInterval);
+            if (currentVideoPreview) {
+                clearTimeout(currentVideoPreview);
+                currentVideoPreview = null;
+            }
             previewDiv.innerHTML = '<div class="preview-placeholder"><div class="preview-placeholder-icon">⏳</div><div>Loading preview...</div></div>';
 
             fetch('get_preview.php?id=' + contentId + '&t=' + Date.now())
@@ -1126,9 +1212,91 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
         function displayPreview(content, slides) {
             const previewDiv = document.getElementById('previewContent');
             if (currentPreviewInterval) clearInterval(currentPreviewInterval);
+            if (currentVideoPreview) {
+                clearTimeout(currentVideoPreview);
+                currentVideoPreview = null;
+            }
 
+            // Handle Website Preview - Use proxy
+            if (content.content_type === 'website') {
+                let websiteData;
+                let websiteTitle = 'Website';
+                let websiteUrl = '';
+                try {
+                    websiteData = JSON.parse(content.content_data);
+                    websiteUrl = websiteData.url || content.content_data;
+                    websiteTitle = websiteData.title || content.description || 'Website';
+                } catch (e) {
+                    websiteUrl = content.content_data;
+                    websiteTitle = content.description || 'Website';
+                }
+
+                // Use the proxy for preview as well
+                const proxyUrl = '/proxy.php?url=' + encodeURIComponent(websiteUrl);
+
+                previewDiv.innerHTML = `
+                    <div class="website-preview-container">
+                        <div class="website-preview-info">
+                            🌐 ${escapeHtml(websiteTitle)} | Preview via proxy
+                        </div>
+                        <iframe class="website-preview-iframe" 
+                                src="${proxyUrl}"
+                                sandbox="allow-same-origin allow-scripts allow-popups allow-forms allow-popups-to-escape-sandbox allow-top-navigation"
+                                title="${escapeHtml(websiteTitle)}">
+                        </iframe>
+                    </div>
+                `;
+            }
+            // Handle PDF Preview
+            else if (content.content_type === 'pdf') {
+                let pdfData;
+                let pdfUrl = '';
+                try {
+                    pdfData = JSON.parse(content.content_data);
+                    pdfUrl = pdfData.file_path || content.content_data;
+                } catch (e) {
+                    pdfUrl = content.content_data;
+                }
+
+                if (!pdfUrl.startsWith('/')) pdfUrl = '/' + pdfUrl;
+                pdfUrl = pdfUrl.replace('uploads/uploads/', 'uploads/');
+                const fullPdfUrl = window.location.origin + pdfUrl;
+
+                previewDiv.innerHTML = `
+                    <div class="pdf-preview-container">
+                        <div class="pdf-toolbar">
+                            <span>📄 PDF Document</span>
+                            <div class="pdf-nav-buttons">
+                                <button class="pdf-nav-btn" id="pdfPreviewPrevBtn" disabled>◀ Prev</button>
+                                <span id="pdfPreviewPageInfo">Loading...</span>
+                                <button class="pdf-nav-btn" id="pdfPreviewNextBtn" disabled>Next ▶</button>
+                            </div>
+                            <span>${formatDurationPreview(content.display_duration)}</span>
+                        </div>
+                        <div class="pdf-canvas-container">
+                            <canvas id="pdfPreviewCanvas" class="pdf-canvas"></canvas>
+                        </div>
+                        <div id="pdfPreviewLoading" class="pdf-loading">
+                            <div style="font-size:40px;">📄</div>
+                            <div>Loading PDF...</div>
+                        </div>
+                    </div>
+                `;
+
+                if (typeof pdfjsLib === 'undefined') {
+                    const script = document.createElement('script');
+                    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+                    script.onload = () => {
+                        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+                        renderPdfPreviewDocument(fullPdfUrl);
+                    };
+                    document.head.appendChild(script);
+                } else {
+                    renderPdfPreviewDocument(fullPdfUrl);
+                }
+            }
             // Handle Audio Preview
-            if (content.content_type === 'local_audio') {
+            else if (content.content_type === 'local_audio') {
                 let audioData;
                 let audioTitle = 'Audio Content';
                 try {
@@ -1200,24 +1368,18 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
             }
             // Handle Slideshow (including multi-image layouts)
             else if (content.content_type === 'slideshow') {
-
-                // Parse content_data JSON first to get layout type and images
                 let layoutType = 'slideshow';
                 let contentImages = [];
                 try {
                     const parsed = JSON.parse(content.content_data);
                     if (parsed && parsed.type) layoutType = parsed.type;
-                    // Extract images from content_data if present (for multi-image layouts)
                     if (parsed && parsed.images && parsed.images.length > 0) {
                         contentImages = parsed.images.map(img => ({
                             image_path: '/uploads/' + img.path.split('/').pop()
                         }));
                     }
-                } catch (e) {
-                    // Not JSON, use default
-                }
+                } catch (e) {}
 
-                // Use slides from DB if available, otherwise use images from content_data
                 const allSlides = (slides && slides.length > 0) ? slides : contentImages;
 
                 if (allSlides.length === 0) {
@@ -1225,7 +1387,6 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
                     return;
                 }
 
-                // MULTI-IMAGE LAYOUTS (2-image, 3-image, 4-image)
                 if (layoutType === '2-image' || layoutType === '3-image' || layoutType === '4-image') {
                     let cols, rows, label;
                     if (layoutType === '4-image') {
@@ -1244,63 +1405,20 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
 
                     const maxImages = layoutType === '4-image' ? 4 : (layoutType === '3-image' ? 3 : 2);
                     const displaySlides = allSlides.slice(0, maxImages);
-
                     let imagesHtml = '';
                     for (let i = 0; i < maxImages; i++) {
                         if (i < displaySlides.length) {
                             const imageUrl = displaySlides[i].image_path;
-                            imagesHtml += `
-                        <div style="overflow:hidden;border-radius:8px;background:#222;display:flex;align-items:center;justify-content:center;width:100%;height:100%;">
-                            <img src="${imageUrl}"
-                                 style="width:100%;height:100%;object-fit:cover;"
-                                 onerror="this.parentElement.style.background='#444';this.style.display='none'">
-                        </div>
-                    `;
+                            imagesHtml += `<div style="overflow:hidden;border-radius:8px;background:#222;display:flex;align-items:center;justify-content:center;width:100%;height:100%;"><img src="${imageUrl}" style="width:100%;height:100%;object-fit:cover;" onerror="this.parentElement.style.background='#444';this.style.display='none'"></div>`;
                         } else {
-                            imagesHtml += `
-                        <div style="background:#333;border-radius:8px;display:flex;align-items:center;justify-content:center;color:#666;font-size:12px;width:100%;height:100%;">
-                            Empty
-                        </div>
-                    `;
+                            imagesHtml += `<div style="background:#333;border-radius:8px;display:flex;align-items:center;justify-content:center;color:#666;font-size:12px;width:100%;height:100%;">Empty</div>`;
                         }
                     }
-
-                    previewDiv.innerHTML = `
-                <div style="width:100%;height:100%;display:flex;flex-direction:column;
-                     justify-content:center;align-items:center;background:#111;padding:15px;gap:10px;">
-                    <div style="display:grid;grid-template-columns:repeat(${cols},1fr);
-                         grid-template-rows:repeat(${rows},1fr);gap:8px;
-                         width:90%;height:70%;max-height:350px;">
-                        ${imagesHtml}
-                    </div>
-                    <div style="color:white;text-align:center;font-size:14px;">
-                        🖼️ ${label}<br>
-                        ${displaySlides.length} image(s) | ${formatDurationPreview(content.display_duration)}
-                    </div>
-                </div>`;
-                }
-                // STANDARD SLIDESHOW (one image at a time)
-                else {
+                    previewDiv.innerHTML = `<div style="width:100%;height:100%;display:flex;flex-direction:column;justify-content:center;align-items:center;background:#111;padding:15px;gap:10px;"><div style="display:grid;grid-template-columns:repeat(${cols},1fr);grid-template-rows:repeat(${rows},1fr);gap:8px;width:90%;height:70%;max-height:350px;">${imagesHtml}</div><div style="color:white;text-align:center;font-size:14px;">🖼️ ${label}<br>${displaySlides.length} image(s) | ${formatDurationPreview(content.display_duration)}</div></div>`;
+                } else {
                     let currentSlide = 0;
-
-                    const dots = allSlides.map((_, i) =>
-                        `<span id="dot-${i}" style="display:inline-block;width:10px;height:10px;border-radius:50%;
-                 background:${i === 0 ? '#fff' : 'rgba(255,255,255,0.4)'};margin:0 4px;transition:background 0.3s;"></span>`
-                    ).join('');
-
-                    previewDiv.innerHTML = `
-                <div style="width:100%;height:100%;display:flex;flex-direction:column;
-                     justify-content:center;align-items:center;background:#000;">
-                    <img id="slideShowImg"
-                         src="${allSlides[0].image_path}"
-                         style="max-width:90%;max-height:75%;object-fit:contain;border-radius:10px;transition:opacity 0.5s;"
-                         onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22100%22 height=%22100%22%3E%3Crect width=%22100%22 height=%22100%22 fill=%22%23333%22/%3E%3Ctext x=%2250%22 y=%2250%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23fff%22%3ENo Image%3C/text%3E%3C/svg%3E'">
-                    <div style="color:white;margin-top:15px;text-align:center;">
-                        🎞️ Slideshow — ${allSlides.length} slide(s) | ${formatDurationPreview(content.display_duration)}
-                    </div>
-                    <div style="margin-top:10px;">${dots}</div>
-                </div>`;
-
+                    const dots = allSlides.map((_, i) => `<span id="dot-${i}" style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${i === 0 ? '#fff' : 'rgba(255,255,255,0.4)'};margin:0 4px;transition:background 0.3s;"></span>`).join('');
+                    previewDiv.innerHTML = `<div style="width:100%;height:100%;display:flex;flex-direction:column;justify-content:center;align-items:center;background:#000;"><img id="slideShowImg" src="${allSlides[0].image_path}" style="max-width:90%;max-height:75%;object-fit:contain;border-radius:10px;transition:opacity 0.5s;" onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22100%22 height=%22100%22%3E%3Crect width=%22100%22 height=%22100%22 fill=%22%23333%22/%3E%3Ctext x=%2250%22 y=%2250%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23fff%22%3ENo Image%3C/text%3E%3C/svg%3E'"><div style="color:white;margin-top:15px;text-align:center;">🎞️ Slideshow — ${allSlides.length} slide(s) | ${formatDurationPreview(content.display_duration)}</div><div style="margin-top:10px;">${dots}</div></div>`;
                     if (allSlides.length > 1) {
                         currentPreviewInterval = setInterval(() => {
                             const img = document.getElementById('slideShowImg');
@@ -1325,11 +1443,7 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
             // Handle YouTube
             else if (content.content_type === 'youtube') {
                 const videoId = extractYouTubeId(content.content_data);
-                previewDiv.innerHTML = `
-            <div style="width:100%;height:100%;display:flex;flex-direction:column;justify-content:center;align-items:center;background:#000;">
-                <img src="https://img.youtube.com/vi/${videoId}/mqdefault.jpg" style="max-width:90%;border-radius:10px;">
-                <div style="color:white;margin-top:20px;">▶️ YouTube Video<br>Duration: ${formatDurationPreview(content.display_duration)}</div>
-            </div>`;
+                previewDiv.innerHTML = `<div style="width:100%;height:100%;display:flex;flex-direction:column;justify-content:center;align-items:center;background:#000;"><img src="https://img.youtube.com/vi/${videoId}/mqdefault.jpg" style="max-width:90%;border-radius:10px;"><div style="color:white;margin-top:20px;">▶️ YouTube Video<br>Duration: ${formatDurationPreview(content.display_duration)}</div></div>`;
             }
             // Handle Message
             else if (content.content_type === 'message') {
@@ -1339,118 +1453,82 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
                     memo: '📝',
                     congratulation: '🎉'
                 };
-                previewDiv.innerHTML = `
-            <div style="width:100%;height:100%;display:flex;justify-content:center;align-items:center;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);">
-                <div style="background:rgba(255,255,255,0.9);border-radius:20px;padding:30px;text-align:center;max-width:80%;">
-                    <div style="font-size:64px;">${icons[content.message_type] || '📝'}</div>
-                    <div style="margin-top:20px;font-weight:bold;">${escapeHtml(content.content_data)}</div>
-                    <div style="margin-top:10px;font-size:12px;">Duration: ${formatDurationPreview(content.display_duration)}</div>
-                </div>
-            </div>`;
+                previewDiv.innerHTML = `<div style="width:100%;height:100%;display:flex;justify-content:center;align-items:center;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);"><div style="background:rgba(255,255,255,0.9);border-radius:20px;padding:30px;text-align:center;max-width:80%;"><div style="font-size:64px;">${icons[content.message_type] || '📝'}</div><div style="margin-top:20px;font-weight:bold;">${escapeHtml(content.content_data)}</div><div style="margin-top:10px;font-size:12px;">Duration: ${formatDurationPreview(content.display_duration)}</div></div></div>`;
             }
-            // Handle PDF
+            // Handle PPT (show conversion message)
             else if (content.content_type === 'ppt') {
-                const pdfUrl = content.pdf_proxy_url || '/lmt/pdf_proxy.php?id=' + content.id;
-
-                previewDiv.innerHTML = `
-            <div class="pdf-preview-container">
-                <div class="pdf-toolbar">
-                    <span>📄 PDF Document</span>
-                    <div class="pdf-nav-buttons">
-                        <button class="pdf-nav-btn" id="pdfPrevBtn" disabled>◀ Prev</button>
-                        <span id="pdfPageInfo">Loading...</span>
-                        <button class="pdf-nav-btn" id="pdfNextBtn" disabled>Next ▶</button>
-                    </div>
-                    <span>${formatDurationPreview(content.display_duration)}</span>
-                </div>
-                <div class="pdf-canvas-container">
-                    <canvas id="pdfCanvas" class="pdf-canvas"></canvas>
-                </div>
-                <div id="pdfLoading" class="pdf-loading">
-                    <div style="font-size:40px;">📄</div>
-                    <div>Loading PDF...</div>
-                </div>
-            </div>`;
-
-                if (typeof pdfjsLib === 'undefined') {
-                    const script = document.createElement('script');
-                    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
-                    script.onload = () => {
-                        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-                        renderPdfPreview(pdfUrl);
-                    };
-                    document.head.appendChild(script);
-                } else {
-                    renderPdfPreview(pdfUrl);
+                let fileName = 'PowerPoint File';
+                try {
+                    const pptData = JSON.parse(content.content_data);
+                    fileName = pptData.original_name || pptData.file_path?.split('/').pop() || 'PowerPoint File';
+                } catch (e) {
+                    fileName = content.content_data?.split('/').pop() || 'PowerPoint File';
                 }
+                previewDiv.innerHTML = `<div class="message-container"><div class="message-card memo"><div class="message-icon">📊</div><div class="message-text" style="font-size:24px;">PowerPoint File</div><div style="margin-top:15px;font-size:14px;">${escapeHtml(fileName)}</div><div style="margin-top:20px;padding:15px;background:rgba(255,255,255,0.1);border-radius:12px;"><div style="font-size:13px;">💡 For best results, convert to PDF and upload as PDF document.</div></div><div style="margin-top:20px;"><span style="background:#ffc107;color:#333;padding:8px15px;border-radius:20px;font-size:12px;">⏱️ Duration: ${formatDurationPreview(content.display_duration)}</span></div></div></div>`;
             } else {
                 previewDiv.innerHTML = `<div class="preview-placeholder"><div class="preview-placeholder-icon">📄</div><div>Preview not available</div></div>`;
             }
         }
 
-        function renderPdfPreview(pdfUrl) {
-            pdfDoc = null;
-            currentPdfPage = 1;
-            const token = ++pdfRenderToken;
+        function renderPdfPreviewDocument(pdfUrl) {
+            let pdfDocLocal = null;
+            let currentPage = 1;
+            let totalPages = 0;
 
-            const loading = document.getElementById('pdfLoading');
+            const loading = document.getElementById('pdfPreviewLoading');
             if (loading) loading.style.display = 'flex';
 
             pdfjsLib.getDocument(pdfUrl).promise.then(pdf => {
-                if (token !== pdfRenderToken) return;
-                pdfDoc = pdf;
-                const info = document.getElementById('pdfPageInfo');
+                pdfDocLocal = pdf;
+                totalPages = pdf.numPages;
+                const info = document.getElementById('pdfPreviewPageInfo');
                 if (info) info.textContent = `Page 1 / ${pdf.numPages}`;
 
-                const prevBtn = document.getElementById('pdfPrevBtn');
-                const nextBtn = document.getElementById('pdfNextBtn');
+                const prevBtn = document.getElementById('pdfPreviewPrevBtn');
+                const nextBtn = document.getElementById('pdfPreviewNextBtn');
                 if (prevBtn) prevBtn.disabled = false;
                 if (nextBtn) nextBtn.disabled = false;
 
-                const loadingDiv = document.getElementById('pdfLoading');
+                const loadingDiv = document.getElementById('pdfPreviewLoading');
                 if (loadingDiv) loadingDiv.style.display = 'none';
-                renderPdfPage(1);
+
+                function renderPage(pageNum) {
+                    pdfDocLocal.getPage(pageNum).then(page => {
+                        const canvas = document.getElementById('pdfPreviewCanvas');
+                        if (!canvas) return;
+                        const container = canvas.parentElement;
+                        const maxW = (container ? container.clientWidth : 600) - 20;
+                        const maxH = (container ? container.clientHeight : 400) - 20;
+                        const viewport = page.getViewport({
+                            scale: 1
+                        });
+                        const scale = Math.min(maxW / viewport.width, maxH / viewport.height, 2);
+                        const scaledViewport = page.getViewport({
+                            scale: Math.max(scale, 0.5)
+                        });
+                        canvas.width = scaledViewport.width;
+                        canvas.height = scaledViewport.height;
+                        page.render({
+                            canvasContext: canvas.getContext('2d'),
+                            viewport: scaledViewport
+                        });
+                        const infoSpan = document.getElementById('pdfPreviewPageInfo');
+                        if (infoSpan) infoSpan.textContent = `Page ${pageNum} / ${pdfDocLocal.numPages}`;
+                        currentPage = pageNum;
+                    });
+                }
+
+                renderPage(1);
+                prevBtn.onclick = () => {
+                    if (currentPage > 1) renderPage(currentPage - 1);
+                };
+                nextBtn.onclick = () => {
+                    if (currentPage < totalPages) renderPage(currentPage + 1);
+                };
             }).catch(err => {
-                if (token !== pdfRenderToken) return;
-                const loadingDiv = document.getElementById('pdfLoading');
+                const loadingDiv = document.getElementById('pdfPreviewLoading');
                 if (loadingDiv) loadingDiv.innerHTML = `<div style="font-size:40px;">⚠️</div><div>Failed to load PDF</div><div style="font-size:11px;">${err.message}</div>`;
             });
-        }
-
-        function renderPdfPage(pageNum) {
-            if (!pdfDoc) return;
-            pdfDoc.getPage(pageNum).then(page => {
-                const canvas = document.getElementById('pdfCanvas');
-                if (!canvas) return;
-                const container = canvas.parentElement;
-                const maxW = (container ? container.clientWidth : 600) - 20;
-                const maxH = (container ? container.clientHeight : 400) - 20;
-                const viewport = page.getViewport({
-                    scale: 1
-                });
-                const scale = Math.min(maxW / viewport.width, maxH / viewport.height, 2);
-                const scaledViewport = page.getViewport({
-                    scale: Math.max(scale, 0.5)
-                });
-                canvas.width = scaledViewport.width;
-                canvas.height = scaledViewport.height;
-                page.render({
-                    canvasContext: canvas.getContext('2d'),
-                    viewport: scaledViewport
-                });
-
-                const info = document.getElementById('pdfPageInfo');
-                if (info) info.textContent = `Page ${pageNum} / ${pdfDoc.numPages}`;
-                currentPdfPage = pageNum;
-            });
-        }
-
-        function pdfPrevPage() {
-            if (pdfDoc && currentPdfPage > 1) renderPdfPage(currentPdfPage - 1);
-        }
-
-        function pdfNextPage() {
-            if (pdfDoc && currentPdfPage < pdfDoc.numPages) renderPdfPage(currentPdfPage + 1);
         }
 
         function formatDurationPreview(seconds) {
@@ -1515,7 +1593,7 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
 
             showConfirmModal(
                 '💾 Save Display Order',
-                'Save this display order? Active content will play in this sequence. The TV will update immediately.\n\nNew order:' + orderList,
+                'Save this display order? Active content will play in this sequence.\n\nThe TV will refresh to show the first content.\n\nNew order:' + orderList,
                 '📋',
                 submitOrder
             );
@@ -1536,14 +1614,11 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
             else if (currentDuration <= 28800) selectedValue = '8h';
             else if (currentDuration <= 43200) selectedValue = '12h';
             else selectedValue = '24h';
+
             document.getElementById('editDuration').value = selectedValue;
+            document.getElementById('editDurationCustom').placeholder = `Current: ${currentDuration} seconds (${formatDurationPreview(currentDuration)})`;
             document.getElementById('editModal').classList.add('active');
         }
-
-        document.addEventListener('click', function(e) {
-            if (e.target.id === 'pdfPrevBtn') pdfPrevPage();
-            if (e.target.id === 'pdfNextBtn') pdfNextPage();
-        });
 
         document.addEventListener('DOMContentLoaded', () => {
             initDragAndDrop();
