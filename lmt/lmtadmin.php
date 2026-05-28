@@ -16,17 +16,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
         $content_type = $_POST['content_type'];
         $description = isset($_POST['description']) ? trim($_POST['description']) : '';
-        $display_duration = convertToSeconds($_POST['display_duration']);
+
+        // Handle custom duration or preset duration
+        if (isset($_POST['display_duration_custom']) && !empty($_POST['display_duration_custom'])) {
+            $display_duration = (int)$_POST['display_duration_custom'];
+        } else {
+            $display_duration = convertToSeconds($_POST['display_duration']);
+        }
+
         $loop_count = isset($_POST['loop_count']) ? (int)$_POST['loop_count'] : 1;
         $insert_position = !empty($_POST['insert_position']) ? $_POST['insert_position'] : null;
         $make_first = isset($_POST['make_first']) ? true : false;
         $layout_type = isset($_POST['layout_type']) ? $_POST['layout_type'] : 'slideshow';
 
-        // Flag to determine if we should force index refresh
-        $force_refresh = $make_first;
-
         // Validate content type
-        $allowed_types = ['slideshow', 'youtube', 'video_upload', 'message', 'ppt', 'audio_upload'];
+        $allowed_types = ['slideshow', 'youtube', 'video_upload', 'message', 'pdf', 'audio_upload', 'website'];
         if (!in_array($content_type, $allowed_types)) {
             throw new Exception('Invalid content type');
         }
@@ -43,16 +47,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         // If make_first is checked, shift all orders up by 1 and set this to 0
         if ($make_first) {
-            $stmt = $pdo->prepare("UPDATE content SET display_order = display_order + 1 WHERE admin_role = 'lmt' ORDER BY display_order DESC");
+            $stmt = $pdo->prepare("UPDATE content SET display_order = display_order + 1 WHERE admin_role = 'lmt'");
             $stmt->execute();
             $new_display_order = 0;
         }
-        // If insert_position is specified, shift orders after that position
+        // If insert_position is specified and not 'last', insert at that position
         else if ($insert_position !== null && $insert_position !== '' && $insert_position !== 'last') {
             $insert_pos = (int)$insert_position;
-            $stmt = $pdo->prepare("UPDATE content SET display_order = display_order + 1 WHERE admin_role = 'lmt' AND display_order >= ? ORDER BY display_order DESC");
-            $stmt->execute([$insert_pos + 1]);
-            $new_display_order = $insert_pos + 1;
+            // Shift items down from the insert position
+            $stmt = $pdo->prepare("UPDATE content SET display_order = display_order + 1 WHERE admin_role = 'lmt' AND display_order >= ?");
+            $stmt->execute([$insert_pos]);
+            $new_display_order = $insert_pos;
         }
         // If 'last' is selected, just append at the end
         else if ($insert_position === 'last') {
@@ -61,7 +66,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if ($content_type === 'slideshow') {
             // Handle slideshow with multiple images
-            if (!isset($_FILES['images']) || empty($_FILES['images']['tmp_name'][0])) {
+            // Check all file inputs for files
+            $has_files = false;
+            foreach ($_FILES['images']['tmp_name'] as $tmp_name) {
+                if (!empty($tmp_name)) {
+                    $has_files = true;
+                    break;
+                }
+            }
+
+            if (!$has_files) {
                 throw new Exception('Please upload at least one image');
             }
 
@@ -108,20 +122,45 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, description, content_data, display_duration, loop_count, is_active, display_order) VALUES (?, ?, ?, ?, ?, ?, 1, ?)");
                 $stmt->execute(['lmt', $content_type, $description, $content_data, $display_duration, $loop_count, $new_display_order]);
             }
-        } elseif ($content_type === 'ppt') {
-            // Handle PPT/PDF upload
-            if (!isset($_FILES['ppt_file']) || $_FILES['ppt_file']['error'] !== UPLOAD_ERR_OK) {
+        } elseif ($content_type === 'pdf') {
+            // Handle PDF document upload
+            if (!isset($_FILES['pdf_file']) || $_FILES['pdf_file']['error'] !== UPLOAD_ERR_OK) {
                 throw new Exception('Please upload a valid PDF file');
             }
 
-            $file = $_FILES['ppt_file'];
-            $allowed_files = ['pdf'];
-            $file_path = validateAndUploadFile($file, '../uploads/', $allowed_files);
+            $file = $_FILES['pdf_file'];
+            $file_ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
 
-            $content_data = json_encode(['file_path' => $file_path]);
+            if ($file_ext !== 'pdf') {
+                throw new Exception('File must be PDF format. Detected: ' . $file_ext);
+            }
+
+            // Check file size
+            $fileSize = $file['size'];
+            $maxSize = 10 * 1024 * 1024; // 10MB
+            if ($fileSize > $maxSize) {
+                throw new Exception('File too large. Max 10MB allowed. Your file: ' . round($fileSize / 1024 / 1024, 2) . 'MB');
+            }
+
+            // Create PDF directory if it doesn't exist
+            $pdf_dir = '../uploads/pdf/';
+            if (!file_exists($pdf_dir)) {
+                mkdir($pdf_dir, 0777, true);
+            }
+
+            $file_path = validateAndUploadFile($file, $pdf_dir, ['pdf']);
+
+            // Ensure the path is correct (remove any double slashes)
+            $file_path = str_replace('//', '/', $file_path);
+
+            // Store the correct path
+            $content_data = json_encode([
+                'type' => 'pdf',
+                'file_path' => $file_path
+            ]);
 
             $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, description, content_data, display_duration, loop_count, is_active, display_order) VALUES (?, ?, ?, ?, ?, ?, 1, ?)");
-            $stmt->execute(['lmt', $content_type, $description, $content_data, $display_duration, $loop_count, $new_display_order]);
+            $stmt->execute(['lmt', 'pdf', $description, $content_data, $display_duration, 1, $new_display_order]);
         } elseif ($content_type === 'youtube') {
             $youtube_link = filter_var($_POST['youtube_link'], FILTER_VALIDATE_URL);
             if (!$youtube_link) {
@@ -137,8 +176,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             $file = $_FILES['video_file'];
+            $file_ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
+
+            if ($file_ext !== 'mp4') {
+                throw new Exception('File must be MP4 format. Detected: ' . $file_ext);
+            }
+
+            // Check file size - InfinityFree has 10MB limit
+            $fileSize = $file['size'];
+            $maxSize = 10 * 1024 * 1024;
+            if ($fileSize > $maxSize) {
+                throw new Exception('Video file too large. InfinityFree allows maximum 10MB per file. Your file is ' . round($fileSize / 1024 / 1024, 2) . 'MB.');
+            }
+
             $allowed_files = ['mp4'];
             $file_path = validateAndUploadFile($file, '../uploads/videos/', $allowed_files);
+            $file_path = str_replace('//', '/', $file_path);
 
             $content_data = json_encode([
                 'type' => 'local_video',
@@ -147,6 +200,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, description, content_data, display_duration, loop_count, is_active, display_order) VALUES (?, ?, ?, ?, ?, ?, 1, ?)");
             $stmt->execute(['lmt', 'local_video', $description, $content_data, $display_duration, $loop_count, $new_display_order]);
+        } elseif ($content_type === 'website') {
+            // Handle website URL embedding
+            $website_url = filter_var($_POST['website_url'], FILTER_VALIDATE_URL);
+            if (!$website_url) {
+                throw new Exception('Invalid website URL');
+            }
+
+            // Extract hostname for display
+            $hostname = parse_url($website_url, PHP_URL_HOST);
+            $display_title = !empty($description) ? $description : $hostname;
+
+            $content_data = json_encode([
+                'type' => 'website',
+                'type' => 'website',
+                'url' => $website_url,
+                'title' => $display_title
+            ]);
+
+            $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, description, content_data, display_duration, loop_count, is_active, display_order) VALUES (?, ?, ?, ?, ?, ?, 1, ?)");
+            $stmt->execute(['lmt', 'website', $description, $content_data, $display_duration, 1, $new_display_order]);
         } elseif ($content_type === 'audio_upload') {
             // Handle audio file upload
             if (!isset($_FILES['audio_file']) || $_FILES['audio_file']['error'] !== UPLOAD_ERR_OK) {
@@ -157,7 +230,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $allowed_files = ['mp3', 'wav', 'ogg', 'm4a'];
             $file_path = validateAndUploadFile($file, '../uploads/audio/', $allowed_files);
 
-            // Get audio metadata if needed (duration, etc.)
             $audio_title = isset($_POST['audio_title']) ? htmlspecialchars($_POST['audio_title']) : '';
             $show_waveform = isset($_POST['show_waveform']) ? 1 : 0;
 
@@ -213,18 +285,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         $_SESSION['flash_success'] = "Content published successfully!";
 
-        // Conditional redirect based on force_refresh flag
-        if ($force_refresh) {
-            // Refresh the index page immediately by triggering a higher version bump
+        if ($make_first) {
             $stmt_extra = $pdo->prepare("UPDATE content_version SET version = version + 1, last_update = NOW() WHERE admin_role = 'lmt'");
             $stmt_extra->execute();
-            $_SESSION['flash_success'] .= " TV will refresh immediately to show new first content.";
+            header('Location: /');
+            exit();
         } else {
-            $_SESSION['flash_success'] .= " The TV will continue normal playback with updated sequence.";
+            header('Location: ' . $_SERVER['PHP_SELF']);
+            exit();
         }
-
-        header('Location: ' . $_SERVER['PHP_SELF']);
-        exit();
     } catch (Exception $e) {
         $pdo->rollBack();
         $_SESSION['flash_error'] = "Error: " . $e->getMessage();
@@ -263,11 +332,11 @@ function convertToSeconds($duration_str)
     return $duration_map[$duration_str] ?? 600;
 }
 
-// Get all content ordered by display_order (same as order manager)
+// Get all content ordered by display_order
 $stmt = $pdo->prepare("SELECT id, content_type, description, created_at, display_order 
                        FROM content 
                        WHERE admin_role = 'lmt' 
-                       ORDER BY COALESCE(display_order, 999999) ASC, id ASC");
+                       ORDER BY display_order ASC, id ASC");
 $stmt->execute();
 $all_content = $stmt->fetchAll();
 ?>
@@ -385,16 +454,20 @@ $all_content = $stmt->fetchAll();
         }
 
         .image-inputs,
+        .pdf-inputs,
         .ppt-inputs,
         .video-upload,
-        .audio-upload {
+        .audio-upload,
+        .website-inputs {
             display: none;
         }
 
         .image-inputs.active,
+        .pdf-inputs.active,
         .ppt-inputs.active,
         .video-upload.active,
-        .audio-upload.active {
+        .audio-upload.active,
+        .website-inputs.active {
             display: block;
         }
 
@@ -447,6 +520,11 @@ $all_content = $stmt->fetchAll();
             padding: 8px 15px;
         }
 
+        .btn-bulk-upload {
+            background: #17a2b8;
+            margin-left: 10px;
+        }
+
         .success {
             background: #d4edda;
             color: #155724;
@@ -474,6 +552,23 @@ $all_content = $stmt->fetchAll();
         .duration-select {
             width: auto;
             min-width: 200px;
+        }
+
+        .custom-duration-input {
+            margin-top: 10px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .custom-duration-input input {
+            width: 150px;
+            margin: 0;
+        }
+
+        .custom-duration-input span {
+            color: #666;
         }
 
         .layout-preview {
@@ -587,7 +682,6 @@ $all_content = $stmt->fetchAll();
         <?php if ($success): ?>
             <div class="success"><?php echo htmlspecialchars($success); ?></div>
         <?php endif; ?>
-
         <?php if ($error): ?>
             <div class="error"><?php echo htmlspecialchars($error); ?></div>
         <?php endif; ?>
@@ -603,59 +697,60 @@ $all_content = $stmt->fetchAll();
                         <option value="youtube">▶️ YouTube Video (Embed)</option>
                         <option value="video_upload">🎬 Upload MP4 Video</option>
                         <option value="audio_upload">🎵 Upload Audio (MP3, WAV, OGG)</option>
+                        <option value="website">🌐 Website Embed (URL)</option>
                         <option value="message">💬 Custom Message</option>
-                        <option value="ppt">📄 PDF Document</option>
+                        <option value="pdf">📑 PDF Document</option>
                     </select>
                 </div>
 
-                <!-- Description Field - Only for Images/Slideshow, PDF, and Audio -->
+                <!-- Description Field -->
                 <div class="form-group description-field" id="descriptionField">
                     <label>📝 Description (Optional)</label>
-                    <textarea name="description" id="description" placeholder="Enter a description for this content (e.g., 'Background Music', 'Announcement', etc.)" maxlength="500"></textarea>
+                    <textarea name="description" id="description" placeholder="Enter a description for this content" maxlength="500"></textarea>
                     <div class="description-hint">This description will help you identify this content in the order manager</div>
                 </div>
 
-                <!-- Position Selection (Replaces Next Content dropdown) -->
+                <!-- Position Selection -->
                 <div class="form-group">
                     <label>📍 Display Position</label>
                     <div class="checkbox-group">
                         <input type="checkbox" name="make_first" id="makeFirst" value="1">
                         <label for="makeFirst">⭐ Make this the FIRST display content</label>
-                        <small>Automatically becomes #1 in sequence (TV will refresh immediately)</small>
+                        <small>TV will refresh to show this content immediately</small>
                     </div>
-
                     <div id="insertPositionGroup" class="insert-position-group">
                         <label>📌 Insert after position:</label>
                         <select name="insert_position" id="insertPosition">
                             <option value="last">-- At the end (after all existing content) --</option>
-                            <?php
-                            $position = 1;
-                            foreach ($all_content as $content):
-                            ?>
-                                <option value="<?php echo $content['display_order'] ?? ($position - 1); ?>">
+                            <?php $position = 1;
+                            foreach ($all_content as $content): ?>
+                                <option value="<?php echo $content['display_order']; ?>">
                                     After #<?php echo $position; ?> -
                                     <?php
                                     $type_icon = '';
                                     if ($content['content_type'] === 'slideshow') $type_icon = '🖼️';
                                     elseif ($content['content_type'] === 'youtube') $type_icon = '▶️';
                                     elseif ($content['content_type'] === 'message') $type_icon = '💬';
-                                    elseif ($content['content_type'] === 'audio_upload') $type_icon = '🎵';
+                                    elseif ($content['content_type'] === 'local_audio') $type_icon = '🎵';
+                                    elseif ($content['content_type'] === 'local_video') $type_icon = '🎬';
+                                    elseif ($content['content_type'] === 'website') $type_icon = '🌐';
+                                    elseif ($content['content_type'] === 'pdf') $type_icon = '📑';
+                                    elseif ($content['content_type'] === 'ppt') $type_icon = '📊';
                                     else $type_icon = '📄';
-                                    echo $type_icon . ' ' . ucfirst($content['content_type']);
+                                    echo $type_icon . ' ' . ucfirst(str_replace('local_', '', $content['content_type']));
                                     if (!empty($content['description'])) {
                                         echo ' - ' . htmlspecialchars(substr($content['description'], 0, 30));
                                     }
                                     ?>
                                 </option>
-                            <?php
-                                $position++;
-                            endforeach;
-                            ?>
+                            <?php $position++;
+                            endforeach; ?>
                         </select>
-                        <div class="info-text">New content will appear AFTER the selected position in the display sequence. TV continues normal playback.</div>
+                        <div class="info-text">New content will appear AFTER the selected position in the display sequence.</div>
                     </div>
                 </div>
 
+                <!-- Layout Type for Slideshow -->
                 <div class="form-group" id="layoutTypeGroup" style="display: none;">
                     <label>Display Layout</label>
                     <select name="layout_type" id="layoutType">
@@ -664,13 +759,12 @@ $all_content = $stmt->fetchAll();
                         <option value="3-image">3 Images Side by Side</option>
                         <option value="4-image">4 Images Grid (2x2)</option>
                     </select>
-                    <div class="layout-preview" id="layoutPreview">
-                        💡 Selected layout will display all images at once in the chosen arrangement
-                    </div>
+                    <div class="layout-preview" id="layoutPreview">💡 Selected layout will display all images at once</div>
                 </div>
 
+                <!-- Slideshow Upload -->
                 <div id="slideshowUpload" class="image-inputs">
-                    <label>📸 Upload Images</label>
+                    <label>📸 Upload Images (Bulk upload supported)</label>
                     <div id="imagesContainer">
                         <div class="image-item" data-index="0">
                             <label>Image 1</label>
@@ -682,16 +776,39 @@ $all_content = $stmt->fetchAll();
                             <button type="button" class="btn-remove-image" onclick="removeImage(this)" style="display:none;">Remove</button>
                         </div>
                     </div>
-                    <button type="button" class="btn-add-image" onclick="addImage()">+ Add Another Image</button>
-                    <div class="info-text">Supported formats: JPG, PNG, GIF, BMP (Max 10MB each)</div>
+                    <div style="margin-top: 10px;">
+                        <button type="button" class="btn-add-image" onclick="addImage()">+ Add Another Image</button>
+                        <button type="button" class="btn-bulk-upload" onclick="bulkUpload()">📁 Bulk Upload (Multiple Files)</button>
+                    </div>
+                    <div class="info-text">Supported formats: JPG, PNG, GIF, BMP (Max 10MB each). <strong>Hold Ctrl/Cmd to select multiple files.</strong></div>
                 </div>
 
-                <div id="pptUpload" class="ppt-inputs">
+                <!-- PDF Upload -->
+                <div id="pdfUpload" class="pdf-inputs">
                     <div class="form-group">
                         <label>📑 PDF Document</label>
-                        <input type="file" name="ppt_file" accept=".pdf">
-                        <div class="info-text">Upload PDF document. For PowerPoint files, convert to PDF first.</div>
+                        <input type="file" name="pdf_file" accept=".pdf">
+                        <div class="info-text">Upload PDF document. The document will be displayed page by page.</div>
                     </div>
+                </div>
+
+                <!-- PowerPoint Upload -->
+                <div id="pptUploadSection" class="ppt-inputs">
+                    <div class="form-group">
+                        <label>📊 PowerPoint File</label>
+                        <input type="file" name="ppt_file" accept=".ppt,.pptx">
+                        <div class="info-text">Upload PowerPoint file (PPT/PPTX). <strong>Note:</strong> Convert to PDF for better compatibility if issues occur.</div>
+                    </div>
+                </div>
+
+                <!-- Website Embed -->
+                <div id="websiteInputs" class="website-inputs">
+                    <div class="form-group">
+                        <label>🌐 Website URL</label>
+                        <input type="url" name="website_url" placeholder="https://example.com">
+                        <div class="info-text">Enter the full URL of the website you want to display on TV.</div>
+                    </div>
+                    <div class="info-text">💡 The website will be displayed in an iframe. Some websites may block embedding.</div>
                 </div>
 
                 <!-- YouTube Embed -->
@@ -699,7 +816,7 @@ $all_content = $stmt->fetchAll();
                     <div class="form-group">
                         <label>🎬 YouTube URL (Embed)</label>
                         <input type="url" name="youtube_link" placeholder="https://www.youtube.com/watch?v=...">
-                        <div class="info-text">Video will play embedded. Duration is controlled by "Overall Display Duration" below.</div>
+                        <div class="info-text">Video will play embedded.</div>
                     </div>
                 </div>
 
@@ -708,7 +825,7 @@ $all_content = $stmt->fetchAll();
                     <div class="form-group">
                         <label>🎬 Upload MP4 Video</label>
                         <input type="file" name="video_file" accept="video/mp4">
-                        <div class="info-text">Upload MP4 video file. Max 100MB.</div>
+                        <div class="info-text">⚠️ <strong>Max 10MB per file.</strong> Compress videos using HandBrake.</div>
                     </div>
                 </div>
 
@@ -717,26 +834,20 @@ $all_content = $stmt->fetchAll();
                     <div class="form-group">
                         <label>🎵 Upload Audio File</label>
                         <input type="file" name="audio_file" accept="audio/mpeg,audio/wav,audio/ogg,audio/mp4">
-                        <div class="info-text">Supported formats: MP3, WAV, OGG, M4A (Max 50MB)</div>
+                        <div class="info-text">Supported formats: MP3, WAV, OGG, M4A (Max 10MB)</div>
                     </div>
-
                     <div class="audio-options">
                         <div class="form-group">
                             <label>🎤 Audio Title (Optional)</label>
-                            <input type="text" name="audio_title" placeholder="e.g., 'Background Music', 'Announcement', etc.">
-                            <div class="info-text">Title will be displayed on the audio player</div>
+                            <input type="text" name="audio_title" placeholder="e.g., 'Background Music'">
                         </div>
-
                         <div class="form-group">
-                            <label>
-                                <input type="checkbox" name="show_waveform" value="1" checked>
-                                🎵 Show Audio Waveform Visualization
-                            </label>
-                            <div class="info-text">Display a beautiful waveform animation while audio plays</div>
+                            <label><input type="checkbox" name="show_waveform" value="1" checked> 🎵 Show Audio Waveform Visualization</label>
                         </div>
                     </div>
                 </div>
 
+                <!-- Custom Message -->
                 <div id="customMessage" class="image-inputs">
                     <div class="form-group">
                         <label>💬 Message Text</label>
@@ -753,9 +864,10 @@ $all_content = $stmt->fetchAll();
                     </div>
                 </div>
 
+                <!-- Overall Display Duration -->
                 <div class="form-group">
                     <label>⏱️ Overall Display Duration</label>
-                    <select name="display_duration" class="duration-select">
+                    <select name="display_duration" id="displayDurationSelect" class="duration-select">
                         <option value="30s">30 seconds</option>
                         <option value="1m">1 minute</option>
                         <option value="5m" selected>5 minutes</option>
@@ -768,14 +880,18 @@ $all_content = $stmt->fetchAll();
                         <option value="8h">8 hours</option>
                         <option value="12h">12 hours</option>
                         <option value="24h">24 hours</option>
+                        <option value="custom">Custom (enter seconds)</option>
                     </select>
-                    <div class="info-text">How long to show this content before moving to next content</div>
+                    <div class="custom-duration-input" id="customDurationInput" style="display: none;">
+                        <input type="number" name="display_duration_custom" id="displayDurationCustom" placeholder="Enter seconds" min="1" max="86400">
+                        <span>seconds (e.g., 300 = 5 minutes)</span>
+                    </div>
                 </div>
 
+                <!-- Loop Group for Videos -->
                 <div class="form-group" id="loopGroup" style="display: none;">
                     <label>🔄 Loop Count (for videos)</label>
                     <input type="number" name="loop_count" value="1" min="1" max="100">
-                    <div class="info-text">How many times to loop the video</div>
                 </div>
 
                 <button type="submit">🚀 Publish to TV</button>
@@ -788,10 +904,12 @@ $all_content = $stmt->fetchAll();
 
         const contentType = document.getElementById('contentType');
         const slideshowUpload = document.getElementById('slideshowUpload');
-        const pptUpload = document.getElementById('pptUpload');
+        const pdfUpload = document.getElementById('pdfUpload');
+        const pptUploadSection = document.getElementById('pptUploadSection');
         const youtubeLink = document.getElementById('youtubeLink');
         const videoUpload = document.getElementById('videoUpload');
         const audioUpload = document.getElementById('audioUpload');
+        const websiteInputs = document.getElementById('websiteInputs');
         const customMessage = document.getElementById('customMessage');
         const loopGroup = document.getElementById('loopGroup');
         const layoutTypeGroup = document.getElementById('layoutTypeGroup');
@@ -799,8 +917,21 @@ $all_content = $stmt->fetchAll();
         const descriptionField = document.getElementById('descriptionField');
         const makeFirst = document.getElementById('makeFirst');
         const insertPositionGroup = document.getElementById('insertPositionGroup');
+        const displayDurationSelect = document.getElementById('displayDurationSelect');
+        const customDurationInput = document.getElementById('customDurationInput');
+        const displayDurationCustom = document.getElementById('displayDurationCustom');
 
-        // Handle checkbox for "Make First"
+        displayDurationSelect.addEventListener('change', function() {
+            if (this.value === 'custom') {
+                customDurationInput.style.display = 'flex';
+                displayDurationCustom.required = true;
+            } else {
+                customDurationInput.style.display = 'none';
+                displayDurationCustom.required = false;
+                displayDurationCustom.value = '';
+            }
+        });
+
         makeFirst.addEventListener('change', function() {
             if (this.checked) {
                 insertPositionGroup.style.display = 'none';
@@ -812,7 +943,7 @@ $all_content = $stmt->fetchAll();
 
         function updateDescriptionVisibility() {
             const selectedType = contentType.value;
-            if (selectedType === 'slideshow' || selectedType === 'ppt' || selectedType === 'audio_upload') {
+            if (selectedType === 'slideshow' || selectedType === 'pdf' || selectedType === 'audio_upload' || selectedType === 'video_upload' || selectedType === 'website') {
                 descriptionField.classList.add('active');
             } else {
                 descriptionField.classList.remove('active');
@@ -828,7 +959,6 @@ $all_content = $stmt->fetchAll();
                     container.style.display = isSlideshow ? 'block' : 'none';
                 }
             });
-
             const preview = document.getElementById('layoutPreview');
             if (layoutType.value === 'slideshow') {
                 preview.innerHTML = '💡 Slideshow mode: Images will rotate one at a time with individual durations';
@@ -841,53 +971,46 @@ $all_content = $stmt->fetchAll();
             }
         }
 
-        contentType.addEventListener('change', function() {
-            slideshowUpload.classList.remove('active');
-            pptUpload.classList.remove('active');
-            youtubeLink.classList.remove('active');
-            videoUpload.classList.remove('active');
-            audioUpload.classList.remove('active');
-            customMessage.classList.remove('active');
+        function bulkUpload() {
+            const bulkInput = document.createElement('input');
+            bulkInput.type = 'file';
+            bulkInput.multiple = true;
+            bulkInput.accept = 'image/jpeg,image/png,image/gif,image/bmp';
+            bulkInput.onchange = function(e) {
+                const files = Array.from(e.target.files);
+                files.forEach((file) => {
+                    const container = document.getElementById('imagesContainer');
+                    const newIndex = imageCount;
 
-            updateDescriptionVisibility();
+                    const imageDiv = document.createElement('div');
+                    imageDiv.className = 'image-item';
+                    imageDiv.setAttribute('data-index', newIndex);
+                    imageDiv.innerHTML = `
+                        <label>Image ${newIndex + 1}</label>
+                        <input type="file" name="images[]" accept="image/jpeg,image/png,image/gif,image/bmp">
+                        <div class="duration-input" id="duration_${newIndex}_container">
+                            <label>Display duration (seconds):</label>
+                            <input type="number" name="duration_${newIndex}" value="10" min="1" max="3600" step="1">
+                        </div>
+                        <button type="button" class="btn-remove-image" onclick="removeImage(this)">Remove</button>
+                    `;
 
-            if (this.value === 'slideshow') {
-                slideshowUpload.classList.add('active');
-                layoutTypeGroup.style.display = 'block';
-                loopGroup.style.display = 'none';
+                    const fileInput = imageDiv.querySelector('input[type="file"]');
+                    const dataTransfer = new DataTransfer();
+                    dataTransfer.items.add(file);
+                    fileInput.files = dataTransfer.files;
+
+                    container.appendChild(imageDiv);
+                    imageCount++;
+                });
                 updateDurationVisibility();
-            } else if (this.value === 'ppt') {
-                pptUpload.classList.add('active');
-                layoutTypeGroup.style.display = 'none';
-                loopGroup.style.display = 'none';
-            } else if (this.value === 'youtube') {
-                youtubeLink.classList.add('active');
-                layoutTypeGroup.style.display = 'none';
-                loopGroup.style.display = 'block';
-            } else if (this.value === 'video_upload') {
-                videoUpload.classList.add('active');
-                layoutTypeGroup.style.display = 'none';
-                loopGroup.style.display = 'none';
-            } else if (this.value === 'audio_upload') {
-                audioUpload.classList.add('active');
-                layoutTypeGroup.style.display = 'none';
-                loopGroup.style.display = 'none';
-            } else if (this.value === 'message') {
-                customMessage.classList.add('active');
-                layoutTypeGroup.style.display = 'none';
-                loopGroup.style.display = 'none';
-            } else {
-                layoutTypeGroup.style.display = 'none';
-                loopGroup.style.display = 'none';
-            }
-        });
-
-        layoutType.addEventListener('change', updateDurationVisibility);
+            };
+            bulkInput.click();
+        }
 
         function addImage() {
             const container = document.getElementById('imagesContainer');
             const newIndex = imageCount;
-
             const imageDiv = document.createElement('div');
             imageDiv.className = 'image-item';
             imageDiv.setAttribute('data-index', newIndex);
@@ -900,7 +1023,6 @@ $all_content = $stmt->fetchAll();
                 </div>
                 <button type="button" class="btn-remove-image" onclick="removeImage(this)">Remove</button>
             `;
-
             container.appendChild(imageDiv);
             imageCount++;
             updateDurationVisibility();
@@ -927,6 +1049,55 @@ $all_content = $stmt->fetchAll();
             updateDurationVisibility();
         }
 
+        contentType.addEventListener('change', function() {
+            slideshowUpload.classList.remove('active');
+            pdfUpload.classList.remove('active');
+            pptUploadSection.classList.remove('active');
+            youtubeLink.classList.remove('active');
+            videoUpload.classList.remove('active');
+            audioUpload.classList.remove('active');
+            websiteInputs.classList.remove('active');
+            customMessage.classList.remove('active');
+
+            updateDescriptionVisibility();
+
+            if (this.value === 'slideshow') {
+                slideshowUpload.classList.add('active');
+                layoutTypeGroup.style.display = 'block';
+                loopGroup.style.display = 'none';
+                updateDurationVisibility();
+            } else if (this.value === 'pdf') {
+                pdfUpload.classList.add('active');
+                layoutTypeGroup.style.display = 'none';
+                loopGroup.style.display = 'none';
+            } else if (this.value === 'youtube') {
+                youtubeLink.classList.add('active');
+                layoutTypeGroup.style.display = 'none';
+                loopGroup.style.display = 'block';
+            } else if (this.value === 'video_upload') {
+                videoUpload.classList.add('active');
+                layoutTypeGroup.style.display = 'none';
+                loopGroup.style.display = 'none';
+            } else if (this.value === 'audio_upload') {
+                audioUpload.classList.add('active');
+                layoutTypeGroup.style.display = 'none';
+                loopGroup.style.display = 'none';
+            } else if (this.value === 'website') {
+                websiteInputs.classList.add('active');
+                layoutTypeGroup.style.display = 'none';
+                loopGroup.style.display = 'none';
+            } else if (this.value === 'message') {
+                customMessage.classList.add('active');
+                layoutTypeGroup.style.display = 'none';
+                loopGroup.style.display = 'none';
+            } else {
+                layoutTypeGroup.style.display = 'none';
+                loopGroup.style.display = 'none';
+            }
+        });
+
+        layoutType.addEventListener('change', updateDurationVisibility);
+
         document.getElementById('contentForm').addEventListener('submit', function(e) {
             const type = contentType.value;
             if (!type) {
@@ -939,16 +1110,16 @@ $all_content = $stmt->fetchAll();
                 const fileInputs = document.querySelectorAll('#imagesContainer input[type="file"]');
                 let hasFiles = false;
                 fileInputs.forEach(input => {
-                    if (input.files.length > 0) hasFiles = true;
+                    if (input.files && input.files.length > 0) hasFiles = true;
                 });
                 if (!hasFiles) {
                     alert('Please upload at least one image.');
                     e.preventDefault();
                     return;
                 }
-            } else if (type === 'ppt') {
-                const pptFile = document.querySelector('input[name="ppt_file"]');
-                if (!pptFile || !pptFile.files.length) {
+            } else if (type === 'pdf') {
+                const pdfFile = document.querySelector('input[name="pdf_file"]');
+                if (!pdfFile || !pdfFile.files.length) {
                     alert('Please upload a PDF file.');
                     e.preventDefault();
                 }
@@ -963,11 +1134,32 @@ $all_content = $stmt->fetchAll();
                 if (!videoFile || !videoFile.files.length) {
                     alert('Please upload an MP4 video file.');
                     e.preventDefault();
+                    return;
+                }
+                const fileName = videoFile.files[0].name;
+                const fileExt = fileName.split('.').pop().toLowerCase();
+                if (fileExt !== 'mp4') {
+                    alert('Only MP4 files are allowed. Detected: ' + fileExt.toUpperCase());
+                    e.preventDefault();
+                    return;
+                }
+                const fileSize = videoFile.files[0].size;
+                const maxSize = 10 * 1024 * 1024;
+                if (fileSize > maxSize) {
+                    alert('File too large. Max 10MB allowed.\n\nYour file: ' + (fileSize / 1024 / 1024).toFixed(2) + 'MB');
+                    e.preventDefault();
+                    return;
                 }
             } else if (type === 'audio_upload') {
                 const audioFile = document.querySelector('input[name="audio_file"]');
                 if (!audioFile || !audioFile.files.length) {
-                    alert('Please upload an audio file (MP3, WAV, OGG, or M4A).');
+                    alert('Please upload an audio file.');
+                    e.preventDefault();
+                }
+            } else if (type === 'website') {
+                const websiteUrl = document.querySelector('input[name="website_url"]');
+                if (!websiteUrl || !websiteUrl.value.trim()) {
+                    alert('Please enter a website URL.');
                     e.preventDefault();
                 }
             } else if (type === 'message') {
@@ -979,7 +1171,6 @@ $all_content = $stmt->fetchAll();
             }
         });
 
-        // Initialize
         loopGroup.style.display = 'none';
         layoutTypeGroup.style.display = 'none';
         descriptionField.classList.remove('active');
