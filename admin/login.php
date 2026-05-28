@@ -22,7 +22,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $error = 'Please enter both username and password';
     } else {
         try {
-            $stmt = $pdo->prepare("SELECT * FROM users WHERE username = ?");
+            $stmt = $pdo->prepare("SELECT * FROM admin_users WHERE username = ?");
             $stmt->execute([$username]);
             $user = $stmt->fetch();
 
