@@ -5,6 +5,7 @@ require_once 'config/db.php';
 if (isset($_GET['action']) && $_GET['action'] === 'check_version') {
     header('Content-Type: application/json');
     header('Cache-Control: no-cache, must-revalidate');
+    header('Access-Control-Allow-Origin: *');
 
     $mode = isset($_GET['mode']) ? $_GET['mode'] : 'lmt';
     $current_version = isset($_GET['version']) ? (int)$_GET['version'] : 0;
@@ -14,9 +15,16 @@ if (isset($_GET['action']) && $_GET['action'] === 'check_version') {
     $version = $stmt->fetch();
     $server_version = $version ? (int)$version['version'] : 1;
 
+    // Also get the first content ID to redirect to base URL
+    $stmt2 = $pdo->prepare("SELECT id FROM content WHERE admin_role = ? AND is_active = 1 ORDER BY COALESCE(display_order, 999999) ASC LIMIT 1");
+    $stmt2->execute([$mode]);
+    $first_content = $stmt2->fetch();
+    $first_content_id = $first_content ? $first_content['id'] : null;
+
     echo json_encode([
         'has_update' => ($server_version > $current_version),
-        'server_version' => $server_version
+        'server_version' => $server_version,
+        'first_content_id' => $first_content_id
     ]);
     exit();
 }
@@ -32,22 +40,19 @@ if (!in_array($current_mode, ['lmt', 'bmt'])) {
     $current_mode = 'lmt';
 }
 
-// Handle content by ID - but always validate that the ID is in the active chain
+// Handle content by ID
 if (isset($_GET['id']) && is_numeric($_GET['id'])) {
     $id = (int)$_GET['id'];
 
-    // First, verify this content exists and is active for this mode
     $stmt = $pdo->prepare("SELECT * FROM content WHERE id = ? AND admin_role = ? AND is_active = 1");
     $stmt->execute([$id, $current_mode]);
     $current_content = $stmt->fetch();
 
     if (!$current_content) {
-        // If invalid ID, redirect to base URL
         header('Location: ?mode=' . $current_mode);
         exit();
     }
 } else {
-    // No ID specified - get the first active content based on display order
     $stmt = $pdo->prepare("SELECT * FROM content WHERE admin_role = ? AND is_active = 1 ORDER BY COALESCE(display_order, 999999) ASC LIMIT 1");
     $stmt->execute([$current_mode]);
     $current_content = $stmt->fetch();
@@ -70,7 +75,6 @@ if ($current_content) {
     }
 }
 
-// If no content, use default
 if (!$current_content) {
     $current_content = [
         'id' => null,
@@ -84,7 +88,6 @@ if (!$current_content) {
     ];
 }
 
-// Get current version for polling (to detect order changes)
 $current_version = 1;
 $stmt = $pdo->prepare("SELECT version FROM content_version WHERE admin_role = ?");
 $stmt->execute([$current_mode]);
@@ -173,17 +176,15 @@ if ($version) $current_version = $version['version'];
             display: flex;
             flex-direction: column;
             align-items: center;
-            justify-content: center;
+            justify-content: flex-start;
             overflow: hidden;
             position: relative;
             background: #000;
         }
 
         .description-bar {
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
+            position: relative;
+            width: 100%;
             background: rgba(0, 0, 0, 0.9);
             backdrop-filter: blur(20px);
             color: white;
@@ -196,6 +197,7 @@ if ($version) $current_version = $version['version'];
             opacity: 0;
             visibility: hidden;
             transition: opacity 0.4s ease, visibility 0.4s ease;
+            flex-shrink: 0;
         }
 
         .description-bar.visible {
@@ -204,12 +206,13 @@ if ($version) $current_version = $version['version'];
         }
 
         .content-wrapper {
+            flex: 1;
             width: 100%;
-            height: 100%;
             display: flex;
             align-items: center;
             justify-content: center;
             overflow: hidden;
+            min-height: 0;
         }
 
         .slideshow-container {
@@ -263,7 +266,6 @@ if ($version) $current_version = $version['version'];
             object-fit: contain;
         }
 
-        /* Audio Player Styles */
         .audio-container {
             width: 100%;
             height: 100%;
@@ -278,7 +280,7 @@ if ($version) $current_version = $version['version'];
         .audio-waveform {
             width: 90%;
             max-width: 1200px;
-            height: 200px;
+            height: 300px;
             margin: 20px auto;
             position: relative;
         }
@@ -291,138 +293,65 @@ if ($version) $current_version = $version['version'];
             backdrop-filter: blur(10px);
         }
 
-        .audio-controls {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 30px;
-            margin: 30px 0;
-        }
-
-        .audio-play-btn {
-            width: 80px;
-            height: 80px;
-            border-radius: 50%;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            border: none;
-            cursor: pointer;
-            font-size: 36px;
-            color: white;
-            transition: transform 0.3s ease, box-shadow 0.3s ease;
-            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
-        }
-
-        .audio-play-btn:hover {
-            transform: scale(1.05);
-            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
-        }
-
         .audio-info {
             text-align: center;
             color: white;
+            margin-bottom: 30px;
         }
 
         .audio-title {
-            font-size: 32px;
+            font-size: 48px;
             font-weight: 600;
-            margin-bottom: 10px;
+            margin-bottom: 20px;
             text-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
         }
 
-        .audio-time {
-            font-size: 18px;
-            opacity: 0.8;
-            font-family: monospace;
-        }
-
-        .audio-progress-bar {
-            width: 60%;
-            max-width: 600px;
-            height: 6px;
-            background: rgba(255, 255, 255, 0.2);
-            border-radius: 10px;
-            margin: 20px auto;
-            cursor: pointer;
-            position: relative;
-            overflow: hidden;
-        }
-
-        .audio-progress-fill {
-            width: 0%;
-            height: 100%;
-            background: linear-gradient(90deg, #667eea, #764ba2);
-            border-radius: 10px;
-            transition: width 0.1s linear;
-            position: relative;
-        }
-
-        .audio-progress-fill::after {
-            content: '';
-            position: absolute;
-            right: 0;
-            top: 50%;
-            transform: translateY(-50%);
-            width: 12px;
-            height: 12px;
-            background: white;
-            border-radius: 50%;
-            box-shadow: 0 0 10px rgba(102, 126, 234, 0.8);
-        }
-
-        .audio-wave-animation {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 8px;
-            margin: 20px 0;
-        }
-
         .audio-wave-bar {
-            width: 8px;
-            height: 30px;
+            width: 10px;
+            height: 40px;
             background: linear-gradient(135deg, #667eea, #764ba2);
-            border-radius: 4px;
+            border-radius: 5px;
             animation: wave 1s ease-in-out infinite;
         }
 
         .audio-wave-bar:nth-child(1) {
             animation-delay: 0s;
-            height: 20px;
+            height: 30px;
         }
 
         .audio-wave-bar:nth-child(2) {
             animation-delay: 0.1s;
-            height: 40px;
+            height: 50px;
         }
 
         .audio-wave-bar:nth-child(3) {
             animation-delay: 0.2s;
-            height: 60px;
+            height: 70px;
         }
 
         .audio-wave-bar:nth-child(4) {
             animation-delay: 0.3s;
-            height: 50px;
+            height: 60px;
         }
 
         .audio-wave-bar:nth-child(5) {
             animation-delay: 0.4s;
-            height: 70px;
+            height: 80px;
         }
 
         .audio-wave-bar:nth-child(6) {
             animation-delay: 0.5s;
-            height: 45px;
+            height: 55px;
         }
 
         .audio-wave-bar:nth-child(7) {
             animation-delay: 0.6s;
-            height: 30px;
+            height: 45px;
         }
 
         .audio-wave-bar:nth-child(8) {
             animation-delay: 0.7s;
-            height: 55px;
+            height: 65px;
         }
 
         .audio-wave-bar:nth-child(9) {
@@ -432,6 +361,16 @@ if ($version) $current_version = $version['version'];
 
         .audio-wave-bar:nth-child(10) {
             animation-delay: 0.9s;
+            height: 40px;
+        }
+
+        .audio-wave-bar:nth-child(11) {
+            animation-delay: 1.0s;
+            height: 50px;
+        }
+
+        .audio-wave-bar:nth-child(12) {
+            animation-delay: 1.1s;
             height: 25px;
         }
 
@@ -528,6 +467,19 @@ if ($version) $current_version = $version['version'];
             text-align: center;
         }
 
+        .website-container {
+            width: 100%;
+            height: 100%;
+            position: relative;
+            background: #fff;
+        }
+
+        .website-iframe {
+            width: 100%;
+            height: 100%;
+            border: none;
+        }
+
         .message-container {
             width: 100%;
             height: 100%;
@@ -572,22 +524,22 @@ if ($version) $current_version = $version['version'];
         }
 
         .warning {
-            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            background: #dc3545;
             border-left: 8px solid #ff0000;
         }
 
         .caution {
-            background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);
+            background: #fd7e14;
             border-left: 8px solid #ff9800;
         }
 
         .memo {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: #6c5ce7;
             border-left: 8px solid #2196f3;
         }
 
         .congratulation {
-            background: linear-gradient(135deg, #a8edea 0%, #fed6e3 100%);
+            background: #28a745;
             border-left: 8px solid #4caf50;
             color: #333;
         }
@@ -610,7 +562,7 @@ if ($version) $current_version = $version['version'];
         }
 
         .congratulation .message-text {
-            color: #333;
+            color: #fff;
         }
 
         .mode-indicator {
@@ -647,11 +599,11 @@ if ($version) $current_version = $version['version'];
             }
 
             .audio-title {
-                font-size: 24px;
+                font-size: 32px;
             }
 
             .audio-waveform {
-                height: 150px;
+                height: 200px;
             }
         }
 
@@ -677,7 +629,6 @@ if ($version) $current_version = $version['version'];
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
     <script>
         pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
-
         if (typeof pdfjsLib !== 'undefined') {
             pdfjsLib.PDFJS = pdfjsLib.PDFJS || {};
             pdfjsLib.PDFJS.verbosity = 0;
@@ -718,14 +669,8 @@ if ($version) $current_version = $version['version'];
         let currentPageIndex = 0;
         let totalPages = 0;
         let pdfRotationInterval = null;
-
-        // Audio variables
         let currentAudio = null;
-        let audioContext = null;
-        let audioSource = null;
-        let audioAnalyser = null;
         let animationId = null;
-        let isPlaying = false;
 
         function clearAllTimeouts() {
             currentTimeouts.forEach(timeout => clearTimeout(timeout));
@@ -738,7 +683,6 @@ if ($version) $current_version = $version['version'];
                 clearInterval(pdfRotationInterval);
                 pdfRotationInterval = null;
             }
-            // Clean up audio
             if (currentAudio) {
                 currentAudio.pause();
                 currentAudio = null;
@@ -747,9 +691,10 @@ if ($version) $current_version = $version['version'];
                 cancelAnimationFrame(animationId);
                 animationId = null;
             }
-            if (audioContext) {
-                audioContext.close();
-                audioContext = null;
+            // Stop website scrolling if active
+            if (window.websiteScrollInterval) {
+                clearInterval(window.websiteScrollInterval);
+                window.websiteScrollInterval = null;
             }
         }
 
@@ -758,6 +703,7 @@ if ($version) $current_version = $version['version'];
             if (description && description.trim() !== '') {
                 descBar.innerHTML = description;
                 descBar.classList.add('visible');
+                // REMOVED auto-hide - description stays permanently
             } else {
                 descBar.classList.remove('visible');
                 descBar.innerHTML = '';
@@ -774,21 +720,469 @@ if ($version) $current_version = $version['version'];
             if (pollingInterval) clearInterval(pollingInterval);
 
             pollingInterval = setInterval(function() {
-                fetch(window.location.pathname + '?action=check_version&mode=' + currentMode + '&version=' + currentVersion, {
+                const url = window.location.pathname + '?action=check_version&mode=' + currentMode + '&version=' + currentVersion;
+                console.log('Polling version check:', url);
+
+                fetch(url, {
                         method: 'GET',
                         headers: {
                             'Accept': 'application/json'
                         }
                     })
-                    .then(response => response.json())
+                    .then(response => {
+                        if (!response.ok) {
+                            throw new Error('HTTP ' + response.status);
+                        }
+                        return response.json();
+                    })
                     .then(data => {
+                        console.log('Version check response:', data);
                         if (data && data.has_update) {
-                            console.log('Update detected, refreshing');
-                            window.location.href = '?mode=' + currentMode;
+                            console.log('Update detected! Refreshing to base URL');
+                            // Refresh to base URL to start from first content
+                            window.location.href = '/?mode=' + currentMode;
                         }
                     })
-                    .catch(error => {});
-            }, 10000);
+                    .catch(error => {
+                        console.log('Polling error:', error);
+                    });
+            }, 3000);
+        }
+
+        function loadWebsite() {
+            const wrapper = document.getElementById('contentWrapper');
+            let websiteData;
+            let isScrolling = true;
+            let scrollSpeed = 2; // Adjust for smoother/faster scrolling
+
+            try {
+                websiteData = typeof currentContent.content_data === 'string' ? JSON.parse(currentContent.content_data) : currentContent.content_data;
+            } catch (e) {
+                websiteData = {
+                    url: currentContent.content_data,
+                    title: 'Website'
+                };
+            }
+
+            const websiteUrl = websiteData.url;
+            const websiteTitle = websiteData.title || currentContent.description || 'Website';
+
+            // Use our own PHP proxy
+            const proxyUrl = '/proxy.php?url=' + encodeURIComponent(websiteUrl);
+
+            wrapper.innerHTML = `
+    <div class="website-container" style="width:100%;height:100%;background:#fff;display:flex;flex-direction:column;">
+        <div style="background:rgba(0,0,0,0.8);color:white;padding:8px 15px;font-size:12px;text-align:center;display:flex;justify-content:space-between;align-items:center;flex-shrink:0;">
+            <span>🌐 ${escapeHtml(websiteTitle)}</span>
+            <div style="display:flex;gap:10px;">
+                <button id="scrollToggleBtn" style="background:#667eea;color:white;border:none;padding:4px 12px;border-radius:15px;cursor:pointer;font-size:11px;">⏸ Pause Scroll</button>
+                <button id="scrollResetBtn" style="background:#28a745;color:white;border:none;padding:4px 12px;border-radius:15px;cursor:pointer;font-size:11px;">🔄 Reset</button>
+            </div>
+        </div>
+        <div style="flex:1;position:relative;overflow:hidden;">
+            <iframe 
+                id="websiteIframe"
+                src="${proxyUrl}"
+                style="width:100%;height:100%;border:none;"
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen"
+                allowfullscreen
+                title="${escapeHtml(websiteTitle)}">
+            </iframe>
+        </div>
+        <div class="scroll-footer" style="background:rgba(0,0,0,0.6);color:white;padding:4px 10px;font-size:10px;text-align:center;flex-shrink:0;">
+            🔄 Auto-scrolling • Scrolls down slowly, returns quickly
+        </div>
+    </div>
+`;
+
+            initWebsiteScrolling(wrapper);
+
+            // Set overall duration timeout to move to next content
+            if (currentContent.display_duration && currentContent.display_duration > 0) {
+                const timeoutId = setTimeout(() => {
+                    loadNextContent();
+                }, currentContent.display_duration * 1000);
+                currentTimeouts.push(timeoutId);
+            }
+        }
+
+        function initWebsiteScrolling(wrapper) {
+            const iframe = document.getElementById('websiteIframe');
+            const toggleBtn = document.getElementById('scrollToggleBtn');
+            const resetBtn = document.getElementById('scrollResetBtn');
+
+            let scrollDirection = 1; // 1 = down, -1 = up
+            let currentPosition = 0;
+            let scrollAnimationId = null;
+            let scrollTimeout = null;
+            let scrollAttempts = 0;
+            let canScroll = true;
+            let isScrolling = true;
+            let scrollSpeed = 1; // Normal scroll speed
+            let fastScrollSpeed = 20; // Fast speed when returning to top
+
+            function startScrolling() {
+                if (scrollAnimationId) return;
+                if (!canScroll) return;
+
+                function smoothScroll() {
+                    if (!isScrolling) return;
+
+                    try {
+                        let iframeDoc = null;
+                        try {
+                            iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+                        } catch (e) {
+                            if (scrollAttempts < 30) {
+                                scrollAttempts++;
+                                scrollAnimationId = requestAnimationFrame(smoothScroll);
+                            } else {
+                                canScroll = false;
+                                if (toggleBtn) toggleBtn.style.display = 'none';
+                                if (resetBtn) resetBtn.style.display = 'none';
+                                if (scrollAnimationId) cancelAnimationFrame(scrollAnimationId);
+                                const footer = wrapper.querySelector('.scroll-footer');
+                                if (footer) {
+                                    footer.innerHTML = '⚠️ Auto-scroll not available for this website';
+                                    footer.style.background = 'rgba(220,53,69,0.8)';
+                                }
+                            }
+                            return;
+                        }
+
+                        if (iframeDoc && iframeDoc.body) {
+                            const maxScroll = iframeDoc.body.scrollHeight - iframeDoc.documentElement.clientHeight;
+
+                            if (maxScroll <= 0) {
+                                if (toggleBtn) toggleBtn.style.display = 'none';
+                                if (resetBtn) resetBtn.style.display = 'none';
+                                const footer = wrapper.querySelector('.scroll-footer');
+                                if (footer) {
+                                    footer.innerHTML = '📄 Content fits on screen - no scrolling needed';
+                                    footer.style.background = 'rgba(0,0,0,0.6)';
+                                }
+                                return;
+                            }
+
+                            // Use different speeds based on direction
+                            const currentSpeed = (scrollDirection === 1) ? scrollSpeed : fastScrollSpeed;
+
+                            if (scrollDirection === 1) {
+                                // Scrolling down (slow)
+                                if (currentPosition < maxScroll) {
+                                    currentPosition += currentSpeed;
+                                    if (currentPosition >= maxScroll) {
+                                        currentPosition = maxScroll;
+                                        scrollDirection = -1; // Switch to up direction
+                                        clearTimeout(scrollTimeout);
+                                        // Small pause at bottom before going up fast
+                                        scrollTimeout = setTimeout(() => {
+                                            scrollAnimationId = requestAnimationFrame(smoothScroll);
+                                        }, 800);
+                                        return;
+                                    }
+                                } else {
+                                    scrollDirection = -1;
+                                    clearTimeout(scrollTimeout);
+                                    scrollTimeout = setTimeout(() => {
+                                        scrollAnimationId = requestAnimationFrame(smoothScroll);
+                                    }, 500);
+                                    return;
+                                }
+                            } else {
+                                // Scrolling up (fast)
+                                if (currentPosition > 0) {
+                                    currentPosition -= currentSpeed;
+                                    if (currentPosition <= 0) {
+                                        currentPosition = 0;
+                                        scrollDirection = 1; // Switch back to down direction
+                                        clearTimeout(scrollTimeout);
+                                        // Pause at top before scrolling down again
+                                        scrollTimeout = setTimeout(() => {
+                                            scrollAnimationId = requestAnimationFrame(smoothScroll);
+                                        }, 1000);
+                                        return;
+                                    }
+                                } else {
+                                    scrollDirection = 1;
+                                    clearTimeout(scrollTimeout);
+                                    scrollTimeout = setTimeout(() => {
+                                        scrollAnimationId = requestAnimationFrame(smoothScroll);
+                                    }, 500);
+                                    return;
+                                }
+                            }
+
+                            // Apply smooth scrolling
+                            iframeDoc.body.style.scrollBehavior = 'smooth';
+                            iframeDoc.documentElement.style.scrollBehavior = 'smooth';
+                            iframe.contentWindow.scrollTo({
+                                top: currentPosition,
+                                behavior: 'smooth'
+                            });
+
+                            // Update footer status
+                            const footer = wrapper.querySelector('.scroll-footer');
+                            if (footer && Math.random() < 0.05) { // Update occasionally
+                                if (scrollDirection === 1) {
+                                    footer.innerHTML = '🔄 Scrolling down slowly...';
+                                } else {
+                                    footer.innerHTML = '⚡ Scrolling up quickly...';
+                                }
+                            }
+
+                            scrollAnimationId = requestAnimationFrame(smoothScroll);
+                        } else {
+                            scrollAnimationId = requestAnimationFrame(smoothScroll);
+                        }
+                    } catch (e) {
+                        if (scrollAttempts < 30) {
+                            scrollAttempts++;
+                            scrollAnimationId = requestAnimationFrame(smoothScroll);
+                        } else {
+                            canScroll = false;
+                            if (toggleBtn) toggleBtn.style.display = 'none';
+                            if (resetBtn) resetBtn.style.display = 'none';
+                            if (scrollAnimationId) cancelAnimationFrame(scrollAnimationId);
+                        }
+                    }
+                }
+
+                scrollAnimationId = requestAnimationFrame(smoothScroll);
+            }
+
+            function stopScrolling() {
+                if (scrollAnimationId) {
+                    cancelAnimationFrame(scrollAnimationId);
+                    scrollAnimationId = null;
+                }
+                if (scrollTimeout) {
+                    clearTimeout(scrollTimeout);
+                    scrollTimeout = null;
+                }
+            }
+
+            function resetToTop() {
+                stopScrolling();
+                currentPosition = 0;
+                scrollDirection = 1; // Reset to down direction
+
+                try {
+                    const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+                    if (iframeDoc && iframeDoc.body) {
+                        iframeDoc.body.style.scrollBehavior = 'auto';
+                        iframe.contentWindow.scrollTo({
+                            top: 0,
+                            behavior: 'auto'
+                        });
+                    }
+                } catch (e) {
+                    console.log('Cannot reset scroll');
+                }
+
+                // Restart scrolling after reset
+                if (isScrolling && canScroll) {
+                    setTimeout(() => {
+                        startScrolling();
+                    }, 500);
+                }
+            }
+
+            // Toggle scroll on/off
+            if (toggleBtn) {
+                toggleBtn.addEventListener('click', () => {
+                    isScrolling = !isScrolling;
+                    if (isScrolling) {
+                        startScrolling();
+                        toggleBtn.textContent = '⏸ Pause Scroll';
+                        toggleBtn.style.background = '#667eea';
+                    } else {
+                        stopScrolling();
+                        toggleBtn.textContent = '▶️ Start Scroll';
+                        toggleBtn.style.background = '#28a745';
+                    }
+                });
+            }
+
+            // Reset button
+            if (resetBtn) {
+                resetBtn.addEventListener('click', resetToTop);
+            }
+
+            // Start scrolling when iframe loads
+            if (iframe) {
+                iframe.addEventListener('load', () => {
+                    console.log('Iframe loaded, starting auto-scroll...');
+                    setTimeout(() => {
+                        if (canScroll) {
+                            startScrolling();
+                            const footer = wrapper.querySelector('.scroll-footer');
+                            if (footer) {
+                                footer.innerHTML = '🔄 Auto-scrolling active • Scrolls down slow, returns fast';
+                                footer.style.background = 'rgba(0,0,0,0.6)';
+                            }
+                        }
+                    }, 2000);
+                });
+
+                setTimeout(() => {
+                    if (canScroll && !scrollAnimationId) {
+                        startScrolling();
+                    }
+                }, 5000);
+            }
+        }
+
+        function loadPPT() {
+            const wrapper = document.getElementById('contentWrapper');
+            let pptData;
+
+            try {
+                pptData = typeof currentContent.content_data === 'string' ? JSON.parse(currentContent.content_data) : currentContent.content_data;
+            } catch (e) {
+                pptData = {
+                    file_path: currentContent.content_data
+                };
+            }
+
+            let filePath = pptData.file_path;
+            if (!filePath) {
+                console.error('No file path found in PPT data');
+                showPPTError(wrapper, 'No file path specified');
+                return;
+            }
+
+            // Clean up the file path
+            filePath = filePath.replace(/^\/+/, '');
+            filePath = filePath.replace(/\\/g, '/');
+
+            // Ensure the path is correct
+            if (!filePath.startsWith('uploads/')) {
+                filePath = 'uploads/' + filePath;
+            }
+
+            // Fix any double slashes
+            filePath = filePath.replace(/\/+/g, '/');
+
+            const pptUrl = window.location.origin + '/' + filePath;
+            const fileExt = filePath.split('.').pop().toLowerCase();
+            const fileName = filePath.split('/').pop();
+
+            console.log('Loading PPT from URL:', pptUrl, 'Extension:', fileExt);
+
+            // First check if the file exists
+            fetch(pptUrl, {
+                    method: 'HEAD'
+                })
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}: File not found`);
+                    }
+
+                    // Use Microsoft Office Online Viewer for PPT/PPTX files
+                    // This is the official Microsoft viewer that works great
+                    const encodedUrl = encodeURIComponent(pptUrl);
+                    const msViewerUrl = `https://view.officeapps.live.com/op/embed.aspx?src=${encodedUrl}`;
+
+                    wrapper.innerHTML = `
+                <div style="width:100%;height:100%;background:#f5f5f5;display:flex;flex-direction:column;">
+                    <div style="flex:1;position:relative;">
+                        <iframe src="${msViewerUrl}" 
+                                style="position:absolute;top:0;left:0;width:100%;height:100%;border:none;"
+                                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen"
+                                allowfullscreen>
+                        </iframe>
+                    </div>
+                    <div style="background:rgba(0,0,0,0.8);color:white;padding:8px 15px;font-size:12px;text-align:center;z-index:10;">
+                        📊 ${escapeHtml(fileName)} | Microsoft Office Viewer
+                    </div>
+                </div>
+            `;
+
+                    if (currentContent.display_duration && currentContent.display_duration > 0) {
+                        currentTimeouts.push(setTimeout(() => loadNextContent(), currentContent.display_duration * 1000));
+                    }
+                })
+                .catch(error => {
+                    console.error('PPT file check error:', error);
+                    // Fallback to Google Docs Viewer if Microsoft fails
+                    const encodedUrl = encodeURIComponent(pptUrl);
+                    const googleViewerUrl = `https://docs.google.com/gview?url=${encodedUrl}&embedded=true`;
+
+                    wrapper.innerHTML = `
+                <div style="width:100%;height:100%;background:#f5f5f5;display:flex;flex-direction:column;">
+                    <div style="flex:1;position:relative;">
+                        <iframe src="${googleViewerUrl}" 
+                                style="position:absolute;top:0;left:0;width:100%;height:100%;border:none;"
+                                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen"
+                                allowfullscreen>
+                        </iframe>
+                    </div>
+                    <div style="background:rgba(0,0,0,0.8);color:white;padding:8px 15px;font-size:12px;text-align:center;z-index:10;">
+                        📊 ${escapeHtml(fileName)} | Google Docs Viewer
+                    </div>
+                </div>
+            `;
+
+                    if (currentContent.display_duration && currentContent.display_duration > 0) {
+                        currentTimeouts.push(setTimeout(() => loadNextContent(), currentContent.display_duration * 1000));
+                    }
+                });
+        }
+
+        function showPPTError(wrapper, errorMsg) {
+            wrapper.innerHTML = `
+        <div class="message-container">
+            <div class="message-card memo">
+                <div class="message-icon">📊</div>
+                <div class="message-text">Unable to display PowerPoint</div>
+                <div style="margin-top: 15px; font-size: 14px; color: #ff6b6b;">${escapeHtml(errorMsg)}</div>
+                <div style="margin-top: 15px; padding: 15px; background: rgba(255,255,255,0.1); border-radius: 12px;">
+                    <div style="font-size: 14px; line-height: 1.6;">
+                        💡 <strong>Tips:</strong><br>
+                        • Convert PowerPoint to PDF for best compatibility<br>
+                        • Or upload as PDF using the admin panel<br>
+                        • PDF files display perfectly on all devices
+                    </div>
+                </div>
+                <div style="margin-top: 20px;">
+                    <button onclick="window.location.href='/lmt/lmtadmin.php'" style="background: #667eea; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; margin: 5px;">
+                        📤 Upload PDF Instead
+                    </button>
+                </div>
+                <div style="margin-top: 15px; font-size: 12px; opacity: 0.6;">
+                    Moving to next content in ${Math.ceil(currentContent.display_duration / 10)} seconds...
+                </div>
+            </div>
+        </div>
+    `;
+
+            if (currentContent.display_duration > 0) {
+                currentTimeouts.push(setTimeout(() => loadNextContent(), currentContent.display_duration * 1000));
+            }
+        }
+
+        function showPPTError(wrapper, errorMsg) {
+            wrapper.innerHTML = `
+        <div class="message-container">
+            <div class="message-card memo">
+                <div class="message-icon">📊</div>
+                <div class="message-text">Error loading PowerPoint</div>
+                <div style="margin-top: 15px; font-size: 14px; color: #ff6b6b;">${escapeHtml(errorMsg)}</div>
+                <div style="margin-top: 10px; font-size: 12px; opacity: 0.7;">
+                    💡 Tip: Convert your PowerPoint to PDF for better compatibility
+                </div>
+                <div style="margin-top: 20px;">
+                    <button onclick="window.location.href='/lmt/lmtadmin.php'" style="background: #667eea; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer;">
+                        📤 Upload PDF Instead
+                    </button>
+                </div>
+            </div>
+        </div>
+    `;
+            if (currentContent.display_duration > 0) {
+                currentTimeouts.push(setTimeout(() => loadNextContent(), currentContent.display_duration * 1000));
+            }
         }
 
         function loadContent() {
@@ -796,68 +1190,111 @@ if ($version) $current_version = $version['version'];
             clearAllTimeouts();
 
             if (!currentContent || !currentContent.content_type) {
-                wrapper.innerHTML = `
-                    <div class="message-container">
-                        <div class="message-card memo">
-                            <div class="message-icon">📺</div>
-                            <div class="message-text">No content available for ${currentMode.toUpperCase()} mode.<br>Please check back later.</div>
-                        </div>
-                    </div>
-                `;
+                wrapper.innerHTML = `<div class="message-container"><div class="message-card memo"><div class="message-icon">📺</div><div class="message-text">No content available for ${currentMode.toUpperCase()} mode.<br>Please check back later.</div></div></div>`;
                 return;
             }
 
-            if ((currentContent.content_type === 'slideshow' || currentContent.content_type === 'ppt') && currentContent.description) {
+            // Show description for all content types (permanently)
+            if (currentContent.description && currentContent.description.trim() !== '') {
                 showDescription(currentContent.description);
             } else {
                 showDescription('');
             }
 
-            if (currentContent.content_type === 'slideshow') {
-                if (currentLayoutData && currentLayoutData.type && currentLayoutData.type !== 'slideshow') {
-                    if (currentLayoutData.type === '2-image' || currentLayoutData.type === '3-image' || currentLayoutData.type === '4-image') {
-                        loadSlideshowPairs(currentLayoutData);
-                    } else {
-                        loadMultiImageLayout(currentLayoutData);
-                    }
-                    return;
-                }
-                if (currentSlides && currentSlides.length > 0) {
-                    loadSlideshow();
-                    return;
-                }
-                try {
-                    const parsed = typeof currentContent.content_data === 'string' ? JSON.parse(currentContent.content_data) : currentContent.content_data;
-                    if (parsed && parsed.images && parsed.images.length > 0) {
-                        if (parsed.type && (parsed.type === '2-image' || parsed.type === '3-image' || parsed.type === '4-image')) {
-                            loadSlideshowPairs(parsed);
+            // Handle different content types
+            switch (currentContent.content_type) {
+                case 'slideshow':
+                    if (currentLayoutData && currentLayoutData.type && currentLayoutData.type !== 'slideshow') {
+                        if (currentLayoutData.type === '2-image' || currentLayoutData.type === '3-image' || currentLayoutData.type === '4-image') {
+                            loadSlideshowPairs(currentLayoutData);
                         } else {
-                            currentSlides = parsed.images;
-                            loadSlideshow();
+                            loadMultiImageLayout(currentLayoutData);
                         }
                         return;
                     }
-                } catch (e) {}
-                loadMessage();
-            } else if (currentContent.content_type === 'youtube') {
-                loadYouTube();
-            } else if (currentContent.content_type === 'local_video') {
-                loadLocalVideo();
-            } else if (currentContent.content_type === 'local_audio') {
-                loadAudio();
-            } else if (currentContent.content_type === 'message') {
-                loadMessage();
-            } else if (currentContent.content_type === 'ppt') {
-                loadPDF();
-            } else {
-                loadMessage();
+                    if (currentSlides && currentSlides.length > 0) {
+                        loadSlideshow();
+                        return;
+                    }
+                    try {
+                        const parsed = typeof currentContent.content_data === 'string' ? JSON.parse(currentContent.content_data) : currentContent.content_data;
+                        if (parsed && parsed.images && parsed.images.length > 0) {
+                            if (parsed.type && (parsed.type === '2-image' || parsed.type === '3-image' || parsed.type === '4-image')) {
+                                loadSlideshowPairs(parsed);
+                            } else {
+                                currentSlides = parsed.images;
+                                loadSlideshow();
+                            }
+                            return;
+                        }
+                    } catch (e) {}
+                    loadMessage();
+                    break;
+
+                case 'youtube':
+                    loadYouTube();
+                    break;
+
+                case 'local_video':
+                    loadLocalVideo();
+                    break;
+
+                case 'local_audio':
+                    loadAudio();
+                    break;
+
+                case 'message':
+                    loadMessage();
+                    break;
+
+                case 'ppt':
+                    loadPPT();
+                    break;
+
+                case 'pdf':
+                    loadPDF();
+                    break;
+
+                case 'website':
+                    loadWebsite();
+                    break;
+
+                default:
+                    loadMessage();
             }
+        }
+
+        function generateFakeWaveform() {
+            const canvas = document.getElementById('audioWaveformCanvas');
+            if (!canvas) return;
+            const ctx = canvas.getContext('2d');
+            const width = canvas.clientWidth;
+            const height = canvas.clientHeight;
+            canvas.width = width;
+            canvas.height = height;
+            const barCount = 100;
+            const barWidth = width / barCount;
+
+            function draw() {
+                ctx.clearRect(0, 0, width, height);
+                for (let i = 0; i < barCount; i++) {
+                    const barHeight = 30 + Math.random() * (height - 60);
+                    const x = i * barWidth;
+                    const y = (height - barHeight) / 2;
+                    const gradient = ctx.createLinearGradient(x, y, x, y + barHeight);
+                    gradient.addColorStop(0, '#667eea');
+                    gradient.addColorStop(1, '#764ba2');
+                    ctx.fillStyle = gradient;
+                    ctx.fillRect(x, y, barWidth - 2, barHeight);
+                }
+                animationId = requestAnimationFrame(draw);
+            }
+            draw();
         }
 
         function loadAudio() {
             const wrapper = document.getElementById('contentWrapper');
             let audioData;
-
             try {
                 audioData = typeof currentContent.content_data === 'string' ? JSON.parse(currentContent.content_data) : currentContent.content_data;
             } catch (e) {
@@ -865,118 +1302,68 @@ if ($version) $current_version = $version['version'];
                     file_path: currentContent.content_data
                 };
             }
-
             let audioPath = audioData.file_path || audioData.path;
             if (!audioPath) {
                 loadMessage();
                 return;
             }
-
             audioPath = audioPath.replace(/^\/+/, '');
             if (!audioPath.startsWith('uploads/') && !audioPath.startsWith('audio/')) {
                 audioPath = 'uploads/audio/' + audioPath.replace(/^uploads\/?/, '');
             }
-
             const audioTitle = audioData.title || 'Background Audio';
             const showWaveform = audioData.show_waveform !== undefined ? audioData.show_waveform : true;
 
+            // No play button - just show waveform and title
             wrapper.innerHTML = `
-                <div class="audio-container">
-                    <div class="audio-info">
-                        <div class="audio-title">🎵 ${escapeHtml(audioTitle)}</div>
-                    </div>
-                    ${showWaveform ? `
-                    <div class="audio-waveform">
-                        <canvas id="audioWaveformCanvas"></canvas>
-                    </div>
-                    <div class="audio-wave-animation">
-                        <div class="audio-wave-bar"></div>
-                        <div class="audio-wave-bar"></div>
-                        <div class="audio-wave-bar"></div>
-                        <div class="audio-wave-bar"></div>
-                        <div class="audio-wave-bar"></div>
-                        <div class="audio-wave-bar"></div>
-                        <div class="audio-wave-bar"></div>
-                        <div class="audio-wave-bar"></div>
-                        <div class="audio-wave-bar"></div>
-                        <div class="audio-wave-bar"></div>
-                    </div>
-                    ` : ''}
-                    <div class="audio-controls">
-                        <button class="audio-play-btn" id="audioPlayBtn">🔊</button>
-                    </div>
-                    <div class="audio-progress-bar" id="audioProgressBar">
-                        <div class="audio-progress-fill" id="audioProgressFill"></div>
-                    </div>
-                    <div class="audio-time">
-                        <span id="audioCurrentTime">0:00</span> / <span id="audioDuration">0:00</span>
-                    </div>
-                </div>
-            `;
+        <div class="audio-container">
+            <div class="audio-info"><div class="audio-title">🎵 ${escapeHtml(audioTitle)}</div></div>
+            ${showWaveform ? `<div class="audio-waveform"><canvas id="audioWaveformCanvas"></canvas></div>` : ''}
+           
+        </div>
+    `;
 
             const audio = new Audio('/' + audioPath);
             currentAudio = audio;
             audio.loop = true;
             audio.volume = 1.0;
 
-            // Set up event listeners
-            audio.addEventListener('loadedmetadata', function() {
-                const duration = formatTime(audio.duration);
-                document.getElementById('audioDuration').textContent = duration;
-            });
+            // Try multiple approaches to autoplay
+            const attemptAutoplay = () => {
+                audio.play().then(() => {
+                    console.log('Audio playing automatically');
+                }).catch(e => {
+                    console.log('Autoplay prevented:', e);
+                    // Try with muted first, then unmute
+                    audio.muted = true;
+                    audio.play().then(() => {
+                        console.log('Audio playing muted, now unmuting');
+                        audio.muted = false;
+                    }).catch(err => {
+                        console.log('Even muted autoplay failed:', err);
+                        // Last resort - show minimal play hint (but TV users may not see it)
+                        const hint = document.createElement('div');
+                        hint.textContent = '🔊';
+                        hint.style.cssText = 'position:fixed;bottom:20px;right:20px;background:rgba(0,0,0,0.5);color:white;padding:5px 10px;border-radius:20px;font-size:12px;z-index:9999;opacity:0.5';
+                        document.body.appendChild(hint);
+                        setTimeout(() => hint.remove(), 3000);
+                    });
+                });
+            };
 
-            audio.addEventListener('timeupdate', function() {
-                const currentTime = formatTime(audio.currentTime);
-                document.getElementById('audioCurrentTime').textContent = currentTime;
-                const progress = (audio.currentTime / audio.duration) * 100;
-                document.getElementById('audioProgressFill').style.width = progress + '%';
-            });
+            // Wait for audio to be ready
+            audio.addEventListener('canplay', attemptAutoplay);
 
-            audio.addEventListener('ended', function() {
-                // Loop manually if needed
-                if (audio.loop) {
-                    audio.currentTime = 0;
-                    audio.play();
+            audio.addEventListener('error', function(e) {
+                console.error('Audio error:', e);
+                console.error('Audio error code:', audio.error ? audio.error.code : 'unknown');
+                if (currentContent.display_duration && currentContent.display_duration > 0) {
+                    const timeoutId = setTimeout(() => loadNextContent(), currentContent.display_duration * 1000);
+                    currentTimeouts.push(timeoutId);
                 }
             });
 
-            // Play button
-            const playBtn = document.getElementById('audioPlayBtn');
-            playBtn.addEventListener('click', function() {
-                if (audio.paused) {
-                    audio.play().catch(e => console.log('Play error:', e));
-                    playBtn.textContent = '⏸';
-                    isPlaying = true;
-                    if (showWaveform) startWaveformVisualization();
-                } else {
-                    audio.pause();
-                    playBtn.textContent = '🔊';
-                    isPlaying = false;
-                    if (animationId) {
-                        cancelAnimationFrame(animationId);
-                        animationId = null;
-                    }
-                }
-            });
-
-            // Progress bar click
-            const progressBar = document.getElementById('audioProgressBar');
-            progressBar.addEventListener('click', function(e) {
-                const rect = progressBar.getBoundingClientRect();
-                const pos = (e.clientX - rect.left) / rect.width;
-                audio.currentTime = pos * audio.duration;
-            });
-
-            // Auto-start playing
-            audio.play().then(() => {
-                playBtn.textContent = '⏸';
-                isPlaying = true;
-                if (showWaveform) startWaveformVisualization();
-            }).catch(e => {
-                console.log('Autoplay prevented, waiting for user interaction');
-                playBtn.textContent = '🔊';
-                isPlaying = false;
-            });
+            audio.load();
 
             if (showWaveform) {
                 generateFakeWaveform();
@@ -985,6 +1372,7 @@ if ($version) $current_version = $version['version'];
             // Set timeout to move to next content after display_duration
             if (currentContent.display_duration && currentContent.display_duration > 0) {
                 const overallTimeoutId = setTimeout(() => {
+                    console.log('Audio duration expired, moving to next content');
                     if (currentAudio) {
                         currentAudio.pause();
                     }
@@ -994,98 +1382,16 @@ if ($version) $current_version = $version['version'];
             }
         }
 
-        function generateFakeWaveform() {
-            const canvas = document.getElementById('audioWaveformCanvas');
-            if (!canvas) return;
-
-            const ctx = canvas.getContext('2d');
-            const width = canvas.clientWidth;
-            const height = canvas.clientHeight;
-
-            canvas.width = width;
-            canvas.height = height;
-
-            const barCount = 80;
-            const barWidth = width / barCount;
-
-            function draw() {
-                ctx.clearRect(0, 0, width, height);
-                ctx.fillStyle = 'rgba(102, 126, 234, 0.3)';
-
-                for (let i = 0; i < barCount; i++) {
-                    const barHeight = 20 + Math.random() * (height - 40);
-                    const x = i * barWidth;
-                    const y = (height - barHeight) / 2;
-
-                    ctx.fillRect(x, y, barWidth - 2, barHeight);
-                }
-
-                requestAnimationFrame(draw);
+        function loadNextContent() {
+            const nextId = currentContent.next_content_id;
+            if (nextId && !isNaN(parseInt(nextId)) && parseInt(nextId) > 0) {
+                console.log('Moving to next content ID:', nextId);
+                window.location.href = '?id=' + nextId + '&mode=' + currentMode;
+            } else {
+                console.log('End of content chain, restarting from beginning');
+                // Go back to base URL to start from the first content
+                window.location.href = '?mode=' + currentMode;
             }
-
-            draw();
-        }
-
-        function startWaveformVisualization() {
-            if (!audioContext) {
-                audioContext = new(window.AudioContext || window.webkitAudioContext)();
-                audioSource = audioContext.createMediaElementSource(currentAudio);
-                audioAnalyser = audioContext.createAnalyser();
-                audioSource.connect(audioAnalyser);
-                audioAnalyser.connect(audioContext.destination);
-                audioAnalyser.fftSize = 256;
-            }
-
-            if (audioContext.state === 'suspended') {
-                audioContext.resume();
-            }
-
-            const canvas = document.getElementById('audioWaveformCanvas');
-            if (!canvas) return;
-
-            const ctx = canvas.getContext('2d');
-            const width = canvas.clientWidth;
-            const height = canvas.clientHeight;
-            canvas.width = width;
-            canvas.height = height;
-
-            const bufferLength = audioAnalyser.frequencyBinCount;
-            const dataArray = new Uint8Array(bufferLength);
-
-            function drawWaveform() {
-                if (!isPlaying) return;
-
-                animationId = requestAnimationFrame(drawWaveform);
-                audioAnalyser.getByteFrequencyData(dataArray);
-
-                ctx.clearRect(0, 0, width, height);
-
-                const barCount = 60;
-                const barWidth = width / barCount;
-
-                for (let i = 0; i < barCount; i++) {
-                    const value = dataArray[i] || 0;
-                    const barHeight = (value / 255) * height;
-                    const x = i * barWidth;
-                    const y = (height - barHeight) / 2;
-
-                    const gradient = ctx.createLinearGradient(x, y, x, y + barHeight);
-                    gradient.addColorStop(0, '#667eea');
-                    gradient.addColorStop(1, '#764ba2');
-
-                    ctx.fillStyle = gradient;
-                    ctx.fillRect(x, y, barWidth - 2, barHeight);
-                }
-            }
-
-            drawWaveform();
-        }
-
-        function formatTime(seconds) {
-            if (isNaN(seconds)) return '0:00';
-            const mins = Math.floor(seconds / 60);
-            const secs = Math.floor(seconds % 60);
-            return `${mins}:${secs.toString().padStart(2, '0')}`;
         }
 
         function loadSlideshow() {
@@ -1094,25 +1400,27 @@ if ($version) $current_version = $version['version'];
                 loadMessage();
                 return;
             }
-
+            if (currentSlides.length === 1) {
+                let imagePath = currentSlides[0].image_path || currentSlides[0].path;
+                if (!imagePath.startsWith('/') && !imagePath.startsWith('http')) imagePath = '/' + imagePath;
+                imagePath = imagePath.replace('uploads/uploads/', 'uploads/');
+                wrapper.innerHTML = `<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:#000;"><img src="${imagePath}" style="width:100%;height:100%;object-fit:contain;"></div>`;
+                if (currentContent.display_duration && currentContent.display_duration > 0) {
+                    currentTimeouts.push(setTimeout(() => loadNextContent(), currentContent.display_duration * 1000));
+                }
+                return;
+            }
             let html = '<div class="slideshow-container">';
             currentSlides.forEach((slide, index) => {
                 let imagePath = slide.image_path || slide.path;
-                if (!imagePath.startsWith('/') && !imagePath.startsWith('http')) {
-                    imagePath = '/' + imagePath;
-                }
+                if (!imagePath.startsWith('/') && !imagePath.startsWith('http')) imagePath = '/' + imagePath;
                 imagePath = imagePath.replace('uploads/uploads/', 'uploads/');
-                html += `<img src="${imagePath}" class="slide-image" data-index="${index}" style="opacity: ${index === 0 ? 1 : 0};" onerror="this.style.display='none'">`;
+                html += `<img src="${imagePath}" class="slide-image" data-index="${index}" style="opacity: ${index === 0 ? 1 : 0};">`;
             });
             html += '</div>';
             wrapper.innerHTML = html;
-
             let currentIndex = 0;
             const slides = document.querySelectorAll('.slide-image');
-            if (slides.length === 0) {
-                loadMessage();
-                return;
-            }
 
             function showNextSlide() {
                 if (!slides.length) return;
@@ -1120,19 +1428,11 @@ if ($version) $current_version = $version['version'];
                 currentIndex = (currentIndex + 1) % slides.length;
                 slides[currentIndex].style.opacity = '1';
                 const duration = (currentSlides[currentIndex]?.duration || 10) * 1000;
-                const timeoutId = setTimeout(showNextSlide, duration);
-                currentTimeouts.push(timeoutId);
+                currentTimeouts.push(setTimeout(showNextSlide, duration));
             }
-
-            if (slides.length > 1) {
-                const firstDuration = (currentSlides[0]?.duration || 10) * 1000;
-                const timeoutId = setTimeout(showNextSlide, firstDuration);
-                currentTimeouts.push(timeoutId);
-            }
-
+            if (slides.length > 1) currentTimeouts.push(setTimeout(showNextSlide, (currentSlides[0]?.duration || 10) * 1000));
             if (currentContent.display_duration && currentContent.display_duration > 0) {
-                const expiryTimeoutId = setTimeout(() => loadNextContent(), currentContent.display_duration * 1000);
-                currentTimeouts.push(expiryTimeoutId);
+                currentTimeouts.push(setTimeout(() => loadNextContent(), currentContent.display_duration * 1000));
             }
         }
 
@@ -1140,12 +1440,22 @@ if ($version) $current_version = $version['version'];
             const wrapper = document.getElementById('contentWrapper');
             const images = layoutData.images || [];
             const imagesPerView = layoutData.type === '2-image' ? 2 : (layoutData.type === '3-image' ? 3 : 4);
-
             if (images.length === 0) {
                 loadMessage();
                 return;
             }
-
+            if (images.length === 1 && imagesPerView > 1) {
+                let imagePath = images[0].path || images[0].image_path;
+                if (imagePath) {
+                    imagePath = imagePath.replace(/^\/+/, '');
+                    if (!imagePath.startsWith('uploads/')) imagePath = 'uploads/' + imagePath;
+                    wrapper.innerHTML = `<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:#000;"><img src="/${imagePath}" style="width:100%;height:100%;object-fit:contain;"></div>`;
+                    if (currentContent.display_duration && currentContent.display_duration > 0) {
+                        currentTimeouts.push(setTimeout(() => loadNextContent(), currentContent.display_duration * 1000));
+                    }
+                    return;
+                }
+            }
             let currentPairIndex = 0;
             let timeoutIds = [];
             const totalPairs = Math.ceil(images.length / imagesPerView);
@@ -1154,58 +1464,37 @@ if ($version) $current_version = $version['version'];
                 const startIdx = pairIndex * imagesPerView;
                 const endIdx = Math.min(startIdx + imagesPerView, images.length);
                 const currentImages = images.slice(startIdx, endIdx);
-
                 let html = '';
-                const gap = 15;
-                const padding = 20;
-
-                if (layoutData.type === '4-image') {
-                    html = `<div style="display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; width: 100vw; height: 100vh; gap: ${gap}px; padding: ${padding}px; background: #000; box-sizing: border-box;">`;
-                } else if (layoutData.type === '2-image') {
-                    html = `<div style="display: grid; grid-template-columns: 1fr 1fr; width: 100vw; height: 100vh; gap: ${gap}px; padding: ${padding}px; background: #000; box-sizing: border-box;">`;
-                } else if (layoutData.type === '3-image') {
-                    html = `<div style="display: grid; grid-template-columns: 1fr 1fr 1fr; width: 100vw; height: 100vh; gap: ${gap}px; padding: ${padding}px; background: #000; box-sizing: border-box;">`;
-                }
-
+                const gap = 15,
+                    padding = 20;
+                if (layoutData.type === '4-image') html = `<div style="display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;width:100vw;height:100vh;gap:${gap}px;padding:${padding}px;background:#000;box-sizing:border-box;">`;
+                else if (layoutData.type === '2-image') html = `<div style="display:grid;grid-template-columns:1fr 1fr;width:100vw;height:100vh;gap:${gap}px;padding:${padding}px;background:#000;box-sizing:border-box;">`;
+                else if (layoutData.type === '3-image') html = `<div style="display:grid;grid-template-columns:1fr 1fr 1fr;width:100vw;height:100vh;gap:${gap}px;padding:${padding}px;background:#000;box-sizing:border-box;">`;
                 for (let i = 0; i < imagesPerView; i++) {
                     if (i < currentImages.length) {
                         let imagePath = currentImages[i].path || currentImages[i].image_path;
                         if (imagePath) {
                             imagePath = imagePath.replace(/^\/+/, '');
-                            if (!imagePath.startsWith('uploads/')) {
-                                imagePath = 'uploads/' + imagePath;
-                            }
-                            html += `<div style="display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; overflow: hidden; background: #0a0a0a; border-radius: 16px;">
-                                        <img src="/${imagePath}" style="width: 100%; height: 100%; object-fit: contain;" onerror="this.parentElement.innerHTML='<div style=\'color:#666;text-align:center;\'>⚠️</div>'">
-                                    </div>`;
+                            if (!imagePath.startsWith('uploads/')) imagePath = 'uploads/' + imagePath;
+                            html += `<div style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;overflow:hidden;background:#0a0a0a;border-radius:16px;"><img src="/${imagePath}" style="width:100%;height:100%;object-fit:contain;"></div>`;
                         }
                     } else {
-                        html += `<div style="display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; background: #2a2a2a; border-radius: 16px; color: #666;"><div>Empty</div></div>`;
+                        html += `<div style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;background:#2a2a2a;border-radius:16px;color:#666;"><div style="text-align:center;">Empty</div></div>`;
                     }
                 }
                 html += `</div>`;
                 wrapper.innerHTML = html;
-
                 const duration = (currentImages[0]?.duration || 10) * 1000;
-                const timeoutId = setTimeout(() => displayPair((pairIndex + 1) % totalPairs), duration);
-                timeoutIds.push(timeoutId);
+                timeoutIds.push(setTimeout(() => displayPair((pairIndex + 1) % totalPairs), duration));
             }
-
-            if (window.pairTimeoutIds) {
-                window.pairTimeoutIds.forEach(id => clearTimeout(id));
-            }
+            if (window.pairTimeoutIds) window.pairTimeoutIds.forEach(id => clearTimeout(id));
             window.pairTimeoutIds = timeoutIds;
             displayPair(0);
-
             if (currentContent.display_duration && currentContent.display_duration > 0) {
-                const overallTimeoutId = setTimeout(() => {
-                    if (window.pairTimeoutIds) {
-                        window.pairTimeoutIds.forEach(id => clearTimeout(id));
-                    }
+                currentTimeouts.push(setTimeout(() => {
+                    if (window.pairTimeoutIds) window.pairTimeoutIds.forEach(id => clearTimeout(id));
                     loadNextContent();
-                }, currentContent.display_duration * 1000);
-                currentTimeouts.push(overallTimeoutId);
-                window.pairTimeoutIds.push(overallTimeoutId);
+                }, currentContent.display_duration * 1000));
             }
         }
 
@@ -1213,60 +1502,46 @@ if ($version) $current_version = $version['version'];
             const wrapper = document.getElementById('contentWrapper');
             const layoutType = layoutData.type;
             const images = layoutData.images || [];
-
             if (images.length === 0) {
                 loadMessage();
                 return;
             }
-
             let html = '';
-            const gap = 15;
-            const padding = 20;
-
-            if (layoutType === '4-image') {
-                html = `<div style="display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; width: 100vw; height: 100vh; gap: ${gap}px; padding: ${padding}px; background: #000; box-sizing: border-box;">`;
-            } else if (layoutType === '2-image') {
-                html = `<div style="display: grid; grid-template-columns: 1fr 1fr; width: 100vw; height: 100vh; gap: ${gap}px; padding: ${padding}px; background: #000; box-sizing: border-box;">`;
-            } else {
+            const gap = 15,
+                padding = 20;
+            if (layoutType === '4-image') html = `<div style="display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;width:100vw;height:100vh;gap:${gap}px;padding:${padding}px;background:#000;box-sizing:border-box;">`;
+            else if (layoutType === '2-image') html = `<div style="display:grid;grid-template-columns:1fr 1fr;width:100vw;height:100vh;gap:${gap}px;padding:${padding}px;background:#000;box-sizing:border-box;">`;
+            else {
                 const columns = layoutType === '3-image' ? '1fr 1fr 1fr' : '1fr 1fr';
-                html = `<div style="display: grid; grid-template-columns: ${columns}; width: 100vw; height: 100vh; gap: ${gap}px; padding: ${padding}px; background: #000; box-sizing: border-box;">`;
+                html = `<div style="display:grid;grid-template-columns:${columns};width:100vw;height:100vh;gap:${gap}px;padding:${padding}px;background:#000;box-sizing:border-box;">`;
             }
-
-            images.forEach((image, index) => {
+            images.forEach((image) => {
                 let imagePath = image.path || image.image_path;
                 if (imagePath) {
                     imagePath = imagePath.replace(/^\/+/, '');
-                    if (!imagePath.startsWith('uploads/')) {
-                        imagePath = 'uploads/' + imagePath;
-                    }
-                    html += `<div style="display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; overflow: hidden; background: #0a0a0a; border-radius: 16px;">
-                                <img src="/${imagePath}" style="width: 100%; height: 100%; object-fit: contain;" onerror="this.parentElement.innerHTML='<div style=\'color:#666;text-align:center;\'>⚠️</div>'">
-                            </div>`;
+                    if (!imagePath.startsWith('uploads/')) imagePath = 'uploads/' + imagePath;
+                    html += `<div style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;overflow:hidden;background:#0a0a0a;border-radius:16px;"><img src="/${imagePath}" style="width:100%;height:100%;object-fit:contain;"></div>`;
                 }
             });
-
             if (layoutType === '4-image' && images.length < 4) {
-                for (let i = images.length; i < 4; i++) {
-                    html += `<div style="display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; background: #2a2a2a; border-radius: 16px; color: #666;">
-                                <div style="text-align: center;">Empty Slot</div>
-                            </div>`;
-                }
+                for (let i = images.length; i < 4; i++) html += `<div style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;background:#2a2a2a;border-radius:16px;color:#666;"><div style="text-align:center;">Empty</div></div>`;
             }
-
             html += `</div>`;
             wrapper.innerHTML = html;
-
             if (currentContent.display_duration && currentContent.display_duration > 0) {
-                const timeoutId = setTimeout(() => loadNextContent(), currentContent.display_duration * 1000);
-                currentTimeouts.push(timeoutId);
+                currentTimeouts.push(setTimeout(() => loadNextContent(), currentContent.display_duration * 1000));
             }
         }
 
         function loadYouTube() {
             const wrapper = document.getElementById('contentWrapper');
             let videoId = extractYouTubeId(currentContent.content_data);
-            const embedUrl = `https://www.youtube.com/embed/${videoId}?autoplay=1&loop=1&playlist=${videoId}&controls=0&rel=0&modestbranding=1&playsinline=1`;
-            wrapper.innerHTML = `<div class="youtube-container"><iframe class="youtube-iframe" src="${embedUrl}" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe></div>`;
+            if (!videoId) {
+                loadMessage();
+                return;
+            }
+            const embedUrl = `https://www.youtube-nocookie.com/embed/${videoId}?autoplay=1&muted=1&loop=1&playlist=${videoId}&controls=1&rel=0`;
+            wrapper.innerHTML = `<div class="youtube-container"><iframe class="youtube-iframe" src="${embedUrl}" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen" allowfullscreen></iframe></div>`;
             if (currentContent.display_duration > 0) {
                 currentTimeouts.push(setTimeout(() => loadNextContent(), currentContent.display_duration * 1000));
             }
@@ -1275,7 +1550,6 @@ if ($version) $current_version = $version['version'];
         function loadLocalVideo() {
             const wrapper = document.getElementById('contentWrapper');
             let videoData;
-
             try {
                 videoData = typeof currentContent.content_data === 'string' ? JSON.parse(currentContent.content_data) : currentContent.content_data;
             } catch (e) {
@@ -1283,29 +1557,55 @@ if ($version) $current_version = $version['version'];
                     file_path: currentContent.content_data
                 };
             }
-
             let videoPath = videoData.file_path || videoData.path;
             if (!videoPath) {
                 loadMessage();
                 return;
             }
-
-            videoPath = videoPath.replace(/^\/+/, '');
+            videoPath = videoPath.replace(/\\/g, '/').replace(/^\/+/, '');
             if (!videoPath.startsWith('uploads/') && !videoPath.startsWith('videos/')) {
                 videoPath = 'uploads/videos/' + videoPath.replace(/^uploads\/?/, '');
             }
-
-            wrapper.innerHTML = `<div class="local-video-container"><video id="localVideo" autoplay playsinline loop controls style="width:100%;height:100%;object-fit:contain;"><source src="/${videoPath}" type="video/mp4"></video></div>`;
-
+            videoPath = videoPath.replace(/\/+/g, '/');
+            const fullUrl = '/' + videoPath;
+            wrapper.innerHTML = `<div class="local-video-container"><video id="localVideo" autoplay playsinline loop controls preload="auto" style="width:100%;height:100%;object-fit:contain;"><source src="${fullUrl}" type="video/mp4"></video></div>`;
             const video = document.getElementById('localVideo');
-            if (video) {
-                video.load();
-                video.play().catch(e => console.log('Play error:', e));
-            }
+            if (!video) return;
+            let durationTimeoutSet = false;
 
-            if (currentContent.display_duration && currentContent.display_duration > 0) {
-                currentTimeouts.push(setTimeout(() => loadNextContent(), currentContent.display_duration * 1000));
+            function setDurationTimeout() {
+                if (durationTimeoutSet) return;
+                durationTimeoutSet = true;
+                const contentDuration = currentContent.display_duration;
+                if (contentDuration && contentDuration > 0) {
+                    const videoDuration = isFinite(video.duration) && video.duration > 0 ? video.duration * 1000 : 0;
+                    const waitMs = Math.max(contentDuration * 1000, videoDuration);
+                    currentTimeouts.push(setTimeout(() => {
+                        video.pause();
+                        loadNextContent();
+                    }, waitMs));
+                }
             }
+            video.addEventListener('loadedmetadata', () => {
+                setDurationTimeout();
+            });
+            currentTimeouts.push(setTimeout(() => {
+                setDurationTimeout();
+            }, 5000));
+            video.load();
+            video.play().catch(err => {
+                if (err.name === 'NotAllowedError') {
+                    const btn = document.createElement('div');
+                    btn.innerHTML = '▶️ Click to Play';
+                    btn.style.cssText = 'position:fixed;bottom:30px;right:30px;background:linear-gradient(135deg,#667eea,#764ba2);color:white;padding:12px 24px;border-radius:40px;cursor:pointer;z-index:9999;font-weight:bold;';
+                    btn.onclick = () => {
+                        video.play();
+                        btn.remove();
+                    };
+                    document.body.appendChild(btn);
+                    setTimeout(() => btn.remove(), 15000);
+                }
+            });
         }
 
         function loadPDF() {
@@ -1313,7 +1613,7 @@ if ($version) $current_version = $version['version'];
             let pdfData;
 
             try {
-                pdfData = JSON.parse(currentContent.content_data);
+                pdfData = typeof currentContent.content_data === 'string' ? JSON.parse(currentContent.content_data) : currentContent.content_data;
             } catch (e) {
                 pdfData = {
                     file_path: currentContent.content_data
@@ -1321,74 +1621,173 @@ if ($version) $current_version = $version['version'];
             }
 
             let filePath = pdfData.file_path;
-            if (!filePath.startsWith('/') && !filePath.startsWith('http')) {
-                filePath = '/' + filePath;
+            if (!filePath) {
+                console.error('No file path found in PDF data');
+                showPDFNotFoundError(wrapper);
+                return;
             }
-            filePath = filePath.replace('uploads/uploads/', 'uploads/');
 
-            const pdfUrl = window.location.origin + filePath;
-            wrapper.innerHTML = `<div class="pdf-container"><div class="pdf-loading">Loading PDF...</div></div>`;
+            // Clean up the file path
+            filePath = filePath.replace(/^\/+/, '');
+            filePath = filePath.replace(/\\/g, '/');
 
-            pdfjsLib.getDocument(pdfUrl).promise.then(function(pdf) {
-                pdfDoc = pdf;
-                totalPages = pdf.numPages;
-                currentPageIndex = 0;
+            // Get the filename from the path
+            const fileName = filePath.split('/').pop();
 
-                if (pdfRotationInterval) clearInterval(pdfRotationInterval);
+            // Try multiple possible paths where the PDF might be located
+            const possiblePaths = [
+                filePath, // Original path from DB
+                'uploads/pdf/' + fileName, // Correct PDF directory
+                'uploads/' + fileName, // Main uploads directory
+                'uploads/pdf/' + filePath.replace(/^uploads\/?/, ''), // Remove uploads prefix
+                'pdf/' + fileName // Just the pdf folder
+            ];
 
-                if (totalPages === 1) {
-                    renderSinglePDFPage();
-                    if (currentContent.display_duration && currentContent.display_duration > 0) {
-                        currentTimeouts.push(setTimeout(() => loadNextContent(), currentContent.display_duration * 1000));
-                    }
-                } else {
-                    renderPDFPages();
-                    startPDFRotation();
+            let currentPathIndex = 0;
+
+            function tryNextPath() {
+                if (currentPathIndex >= possiblePaths.length) {
+                    console.error('All PDF paths failed');
+                    showPDFNotFoundError(wrapper);
+                    return;
                 }
-            }).catch(function(error) {
-                console.error('Error loading PDF:', error);
-                wrapper.innerHTML = `<div class="message-container"><div class="message-card memo"><div class="message-icon">📄</div><div class="message-text">Error loading PDF</div></div></div>`;
+
+                const testPath = possiblePaths[currentPathIndex].replace(/^\/+/, '');
+                const fullUrl = window.location.origin + '/' + testPath;
+
+                console.log(`Trying PDF path ${currentPathIndex + 1}: ${fullUrl}`);
+
+                fetch(fullUrl, {
+                        method: 'HEAD'
+                    })
+                    .then(response => {
+                        if (!response.ok) {
+                            throw new Error(`HTTP ${response.status}`);
+                        }
+                        // File found, load it
+                        console.log(`PDF found at: ${fullUrl}`);
+                        loadPDFDocument(fullUrl, wrapper);
+                    })
+                    .catch(error => {
+                        console.log(`Path ${currentPathIndex + 1} failed:`, error.message);
+                        currentPathIndex++;
+                        tryNextPath();
+                    });
+            }
+
+            function loadPDFDocument(pdfUrl, wrapper) {
+                console.log('Loading PDF from URL:', pdfUrl);
+                wrapper.innerHTML = `<div class="pdf-container"><div class="pdf-loading">Loading PDF...</div></div>`;
+
+                pdfjsLib.getDocument(pdfUrl).promise.then(function(pdf) {
+                    pdfDoc = pdf;
+                    totalPages = pdf.numPages;
+                    currentPageIndex = 0;
+                    console.log('PDF loaded successfully, pages:', totalPages);
+
+                    if (pdfRotationInterval) clearInterval(pdfRotationInterval);
+
+                    if (totalPages === 1) {
+                        renderSinglePDFPage();
+                        if (currentContent.display_duration && currentContent.display_duration > 0) {
+                            currentTimeouts.push(setTimeout(() => loadNextContent(), currentContent.display_duration * 1000));
+                        }
+                    } else {
+                        renderPDFPages();
+                        startPDFRotation();
+                    }
+                }).catch(function(error) {
+                    console.error('PDF.js error:', error);
+                    showPDFNotFoundError(wrapper);
+                });
+            }
+
+            function showPDFNotFoundError(wrapper) {
+                wrapper.innerHTML = `
+            <div class="message-container">
+                <div class="message-card memo">
+                    <div class="message-icon">📄</div>
+                    <div class="message-text">PDF Not Found</div>
+                    <div style="margin-top: 15px; font-size: 14px; color: #ff6b6b;">
+                        The PDF file could not be located.
+                    </div>
+                    <div style="margin-top: 15px; padding: 15px; background: rgba(255,255,255,0.1); border-radius: 12px;">
+                        <div style="font-size: 14px; line-height: 1.6;">
+                            💡 <strong>Solution:</strong><br>
+                            Please re-upload this PDF file using the admin panel.
+                        </div>
+                    </div>
+                    <div style="margin-top: 20px;">
+                        <button onclick="window.location.href='/lmt/lmtadmin.php'" style="background: #667eea; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer;">
+                            📤 Upload PDF Again
+                        </button>
+                    </div>
+                    <div style="margin-top: 15px; font-size: 12px; opacity: 0.6;">
+                        Moving to next content in 10 seconds...
+                    </div>
+                </div>
+            </div>
+        `;
+
                 if (currentContent.display_duration > 0) {
                     currentTimeouts.push(setTimeout(() => loadNextContent(), currentContent.display_duration * 1000));
                 }
-            });
+            }
+
+            // Start trying paths
+            tryNextPath();
+        }
+
+        function showPDFError(wrapper, errorMsg) {
+            wrapper.innerHTML = `
+        <div class="message-container">
+            <div class="message-card memo">
+                <div class="message-icon">📄</div>
+                <div class="message-text">Error loading PDF</div>
+                <div style="margin-top: 15px; font-size: 14px; color: #ff6b6b;">${escapeHtml(errorMsg)}</div>
+                <div style="margin-top: 10px; font-size: 12px; opacity: 0.7;">Moving to next content...</div>
+            </div>
+        </div>
+    `;
+        }
+
+        function showPDFError(wrapper, errorMsg) {
+            wrapper.innerHTML = `
+        <div class="message-container">
+            <div class="message-card memo">
+                <div class="message-icon">📄</div>
+                <div class="message-text">Error loading PDF</div>
+                <div style="margin-top: 15px; font-size: 14px; color: #ff6b6b;">${escapeHtml(errorMsg)}</div>
+                <div style="margin-top: 10px; font-size: 12px; opacity: 0.7;">Moving to next content...</div>
+            </div>
+        </div>
+    `;
         }
 
         function renderSinglePDFPage() {
             if (!pdfDoc) return;
-
             const wrapper = document.getElementById('contentWrapper');
             wrapper.innerHTML = '<div class="pdf-container"><div class="pdf-viewer single-page"></div></div>';
-
             const viewer = wrapper.querySelector('.pdf-viewer');
-
             pdfDoc.getPage(1).then(function(page) {
                 const containerWidth = window.innerWidth - 80;
                 const containerHeight = window.innerHeight - 120;
                 const viewport = page.getViewport({
                     scale: 1
                 });
-
-                const scaleX = containerWidth / viewport.width;
-                const scaleY = containerHeight / viewport.height;
-                const scale = Math.min(scaleX, scaleY, 3.0);
-
+                const scale = Math.min(containerWidth / viewport.width, containerHeight / viewport.height, 3.0);
                 const scaledViewport = page.getViewport({
                     scale: scale
                 });
-
                 const pageWrapper = document.createElement('div');
                 pageWrapper.className = 'pdf-page-wrapper single';
                 pageWrapper.style.width = scaledViewport.width + 'px';
                 pageWrapper.style.height = scaledViewport.height + 'px';
-
                 const canvas = document.createElement('canvas');
                 canvas.width = scaledViewport.width;
                 canvas.height = scaledViewport.height;
-
                 pageWrapper.appendChild(canvas);
                 viewer.appendChild(pageWrapper);
-
                 page.render({
                     canvasContext: canvas.getContext('2d'),
                     viewport: scaledViewport
@@ -1398,70 +1797,54 @@ if ($version) $current_version = $version['version'];
 
         function renderPDFPages() {
             if (!pdfDoc) return;
-
             const wrapper = document.getElementById('contentWrapper');
             const startPage = currentPageIndex * 2 + 1;
             const endPage = Math.min(startPage + 1, totalPages);
-
             if (startPage > totalPages) {
                 currentPageIndex = 0;
                 renderPDFPages();
                 return;
             }
-
             wrapper.innerHTML = '<div class="pdf-container"><div class="pdf-viewer two-pages"></div></div>';
             const viewer = wrapper.querySelector('.pdf-viewer');
-
             const pagePromises = [];
-
             for (let pageNum = startPage; pageNum <= endPage; pageNum++) {
                 pagePromises.push(pdfDoc.getPage(pageNum));
             }
-
             Promise.all(pagePromises).then(function(pages) {
                 const containerWidth = (window.innerWidth - 100) / pages.length;
                 const containerHeight = window.innerHeight - 140;
-
                 pages.forEach(function(page) {
                     const viewport = page.getViewport({
                         scale: 1
                     });
-                    const scaleX = containerWidth / viewport.width;
-                    const scaleY = containerHeight / viewport.height;
-                    const scale = Math.min(scaleX, scaleY, 2.5);
-
+                    const scale = Math.min(containerWidth / viewport.width, containerHeight / viewport.height, 2.5);
                     const scaledViewport = page.getViewport({
                         scale: scale
                     });
-
                     const pageWrapper = document.createElement('div');
                     pageWrapper.className = 'pdf-page-wrapper';
                     pageWrapper.style.width = scaledViewport.width + 'px';
                     pageWrapper.style.height = scaledViewport.height + 'px';
-
                     const canvas = document.createElement('canvas');
                     canvas.width = scaledViewport.width;
                     canvas.height = scaledViewport.height;
-
                     pageWrapper.appendChild(canvas);
                     viewer.appendChild(pageWrapper);
-
                     page.render({
                         canvasContext: canvas.getContext('2d'),
                         viewport: scaledViewport
                     });
                 });
-
                 const pageIndicator = document.createElement('div');
                 pageIndicator.className = 'pdf-page-number';
-                pageIndicator.textContent = `Page ${startPage}-${endPage} of ${totalPages}`;
+                pageIndicator.textContent = `Pages ${startPage}-${endPage} of ${totalPages}`;
                 wrapper.querySelector('.pdf-container').appendChild(pageIndicator);
             });
         }
 
         function startPDFRotation() {
             if (pdfRotationInterval) clearInterval(pdfRotationInterval);
-
             pdfRotationInterval = setInterval(() => {
                 if (pdfDoc) {
                     const totalSets = Math.ceil(totalPages / 2);
@@ -1469,15 +1852,12 @@ if ($version) $current_version = $version['version'];
                     renderPDFPages();
                 }
             }, 20000);
-
             currentTimeouts.push(pdfRotationInterval);
-
             if (currentContent.display_duration && currentContent.display_duration > 0) {
-                const overallTimeoutId = setTimeout(() => {
+                currentTimeouts.push(setTimeout(() => {
                     if (pdfRotationInterval) clearInterval(pdfRotationInterval);
                     loadNextContent();
-                }, currentContent.display_duration * 1000);
-                currentTimeouts.push(overallTimeoutId);
+                }, currentContent.display_duration * 1000));
             }
         }
 
@@ -1524,7 +1904,6 @@ if ($version) $current_version = $version['version'];
         document.addEventListener('DOMContentLoaded', function() {
             loadContent();
             startPolling();
-
             const navDropdown = document.getElementById('navDropdown');
             let hoverTimer;
             navDropdown.addEventListener('mouseenter', function() {
@@ -1533,9 +1912,7 @@ if ($version) $current_version = $version['version'];
             });
             navDropdown.addEventListener('mouseleave', function() {
                 hoverTimer = setTimeout(() => {
-                    if (!this.classList.contains('active')) {
-                        this.style.transform = 'translateX(-96%)';
-                    }
+                    if (!this.classList.contains('active')) this.style.transform = 'translateX(-96%)';
                 }, 1000);
             });
             navDropdown.addEventListener('click', function(e) {
