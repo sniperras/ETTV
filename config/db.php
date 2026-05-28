@@ -1,15 +1,15 @@
 <?php
 // config/db.php
-$host = 'sql309.infinityfree.com';
-$dbname = 'if0_41927736_ettv_db';
-$username = 'if0_41927736';
-$password = '6nxm5lTTys';
+$host = 'sql306.infinityfree.com';
+$dbname = 'if0_41981132_ettv_db';
+$username = 'if0_41981132';
+$password = 'WaFv3NB34vId';
 
 try {
     $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username, $password);
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
-} catch(PDOException $e) {
+} catch (PDOException $e) {
     die("Connection failed: " . $e->getMessage());
 }
 
@@ -20,7 +20,7 @@ if (session_status() === PHP_SESSION_NONE) {
     ini_set('session.use_only_cookies', 1);
     ini_set('session.cookie_secure', 0); // Set to 1 if using HTTPS
     ini_set('session.cookie_samesite', 'Lax');
-    
+
     session_start();
 }
 
@@ -32,4 +32,3 @@ if (!isset($_SESSION['last_regeneration'])) {
     session_regenerate_id(true);
     $_SESSION['last_regeneration'] = time();
 }
-?>
