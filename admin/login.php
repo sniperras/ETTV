@@ -96,7 +96,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         .login-container {
-            background: rgba(255, 255, 255, 0.98);
+            background: rgb(255, 255, 255);
             padding: 40px 35px;
             border-radius: 24px;
             box-shadow: 0 30px 80px rgba(0, 0, 0, 0.5);
@@ -355,7 +355,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <div class="login-container">
         <!-- Logo at the top of login container -->
         <div class="logo-wrapper">
-            <img src="../img/ethiopian_logo.ico" alt="Logo" class="logo"
+            <img src="../img/logo.png" alt="Logo" class="logo"
                 onerror="this.style.display='none'; this.parentElement.innerHTML='<div style=\'font-size:60px;\'>✈️</div>';">
         </div>
 
@@ -381,7 +381,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <input type="password" name="password" placeholder="Enter your password" required>
                 </div>
             </div>
-            <button type="submit">🚀 Sign In</button>
+            <button type="submit">Sign In</button>
         </form>
 
         <div class="links">
@@ -390,9 +390,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <a href="/">← Back to TV Display</a>
         </div>
 
-        <div class="demo-hint">
-            💡 Default credentials: <code>lmtadmin</code> / <code>admin123</code>
-        </div>
+
 
         <div class="info">
             🔐 Secure Admin Access • All connections are encrypted
