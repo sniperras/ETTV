@@ -1,9 +1,9 @@
 <?php
 // config/db.php
-$host = 'sql306.infinityfree.com';
-$dbname = 'if0_41981132_ettv_db';
-$username = 'if0_41981132';
-$password = 'WaFv3NB34vId';
+$host = 'sql309.infinityfree.com';
+$dbname = 'if0_41927736_ettv_db';
+$username = 'if0_41927736';
+$password = '6nxm5lTTys';
 
 try {
     $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username, $password);
