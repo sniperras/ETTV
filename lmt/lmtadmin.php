@@ -101,8 +101,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             if ($layout_type === 'slideshow') {
                 // Traditional slideshow - store in content_slides table
-                $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, description, display_duration, loop_count, is_active, display_order) VALUES (?, ?, ?, ?, ?, 1, ?)");
-                $stmt->execute(['lmt', $content_type, $description, $display_duration, $loop_count, $new_display_order]);
+                $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, description, display_duration, loop_count, is_active, display_order, created_by, updated_by) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)");
+                $stmt->execute(['lmt', $content_type, $description, $display_duration, $loop_count, $new_display_order, $_SESSION['user_id'], $_SESSION['user_id']]);
                 $content_id = $pdo->lastInsertId();
 
                 // Insert each slide
@@ -119,8 +119,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'images' => $uploaded_images
                 ]);
 
-                $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, description, content_data, display_duration, loop_count, is_active, display_order) VALUES (?, ?, ?, ?, ?, ?, 1, ?)");
-                $stmt->execute(['lmt', $content_type, $description, $content_data, $display_duration, $loop_count, $new_display_order]);
+                $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, description, content_data, display_duration, loop_count, is_active, display_order, created_by, updated_by) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)");
+                $stmt->execute(['lmt', $content_type, $description, $content_data, $display_duration, $loop_count, $new_display_order, $_SESSION['user_id'], $_SESSION['user_id']]);
             }
         } elseif ($content_type === 'pdf') {
             // Handle PDF document upload
@@ -159,16 +159,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'file_path' => $file_path
             ]);
 
-            $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, description, content_data, display_duration, loop_count, is_active, display_order) VALUES (?, ?, ?, ?, ?, ?, 1, ?)");
-            $stmt->execute(['lmt', 'pdf', $description, $content_data, $display_duration, 1, $new_display_order]);
+            $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, description, content_data, display_duration, loop_count, is_active, display_order, created_by, updated_by) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)");
+            $stmt->execute(['lmt', 'pdf', $description, $content_data, $display_duration, 1, $new_display_order, $_SESSION['user_id'], $_SESSION['user_id']]);
         } elseif ($content_type === 'youtube') {
             $youtube_link = filter_var($_POST['youtube_link'], FILTER_VALIDATE_URL);
             if (!$youtube_link) {
                 throw new Exception('Invalid YouTube URL');
             }
 
-            $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, content_data, display_duration, loop_count, is_active, display_order) VALUES (?, ?, ?, ?, ?, 1, ?)");
-            $stmt->execute(['lmt', $content_type, $youtube_link, $display_duration, $loop_count, $new_display_order]);
+            $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, content_data, display_duration, loop_count, is_active, display_order, created_by, updated_by) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)");
+            $stmt->execute(['lmt', $content_type, $youtube_link, $display_duration, $loop_count, $new_display_order, $_SESSION['user_id'], $_SESSION['user_id']]);
         } elseif ($content_type === 'video_upload') {
             // Handle MP4 video upload
             if (!isset($_FILES['video_file']) || $_FILES['video_file']['error'] !== UPLOAD_ERR_OK) {
@@ -198,8 +198,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'file_path' => $file_path
             ]);
 
-            $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, description, content_data, display_duration, loop_count, is_active, display_order) VALUES (?, ?, ?, ?, ?, ?, 1, ?)");
-            $stmt->execute(['lmt', 'local_video', $description, $content_data, $display_duration, $loop_count, $new_display_order]);
+            $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, description, content_data, display_duration, loop_count, is_active, display_order, created_by, updated_by) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)");
+            $stmt->execute(['lmt', 'local_video', $description, $content_data, $display_duration, $loop_count, $new_display_order, $_SESSION['user_id'], $_SESSION['user_id']]);
         } elseif ($content_type === 'website') {
             // Handle website URL embedding
             $website_url = filter_var($_POST['website_url'], FILTER_VALIDATE_URL);
@@ -213,13 +213,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             $content_data = json_encode([
                 'type' => 'website',
-                'type' => 'website',
                 'url' => $website_url,
                 'title' => $display_title
             ]);
 
-            $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, description, content_data, display_duration, loop_count, is_active, display_order) VALUES (?, ?, ?, ?, ?, ?, 1, ?)");
-            $stmt->execute(['lmt', 'website', $description, $content_data, $display_duration, 1, $new_display_order]);
+            $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, description, content_data, display_duration, loop_count, is_active, display_order, created_by, updated_by) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)");
+            $stmt->execute(['lmt', 'website', $description, $content_data, $display_duration, 1, $new_display_order, $_SESSION['user_id'], $_SESSION['user_id']]);
         } elseif ($content_type === 'audio_upload') {
             // Handle audio file upload
             if (!isset($_FILES['audio_file']) || $_FILES['audio_file']['error'] !== UPLOAD_ERR_OK) {
@@ -240,8 +239,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'show_waveform' => $show_waveform
             ]);
 
-            $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, description, content_data, display_duration, loop_count, is_active, display_order) VALUES (?, ?, ?, ?, ?, ?, 1, ?)");
-            $stmt->execute(['lmt', 'local_audio', $description, $content_data, $display_duration, $loop_count, $new_display_order]);
+            $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, description, content_data, display_duration, loop_count, is_active, display_order, created_by, updated_by) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)");
+            $stmt->execute(['lmt', 'local_audio', $description, $content_data, $display_duration, $loop_count, $new_display_order, $_SESSION['user_id'], $_SESSION['user_id']]);
         } elseif ($content_type === 'message') {
             $message_text = htmlspecialchars($_POST['message_text'], ENT_QUOTES, 'UTF-8');
             $message_type = $_POST['message_type'];
@@ -251,8 +250,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $message_type = 'memo';
             }
 
-            $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, content_data, message_type, display_duration, loop_count, is_active, display_order) VALUES (?, ?, ?, ?, ?, ?, 1, ?)");
-            $stmt->execute(['lmt', $content_type, $message_text, $message_type, $display_duration, $loop_count, $new_display_order]);
+            $stmt = $pdo->prepare("INSERT INTO content (admin_role, content_type, content_data, message_type, display_duration, loop_count, is_active, display_order, created_by, updated_by) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)");
+            $stmt->execute(['lmt', $content_type, $message_text, $message_type, $display_duration, $loop_count, $new_display_order, $_SESSION['user_id'], $_SESSION['user_id']]);
         }
 
         // Rebuild the chain after insertion

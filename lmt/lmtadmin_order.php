@@ -13,7 +13,12 @@ try {
 } catch (PDOException $e) {
 }
 
-// Handle save order
+// Add created_by column if not exists (for tracking who created content)
+try {
+    $pdo->exec("ALTER TABLE content ADD COLUMN IF NOT EXISTS created_by INT DEFAULT NULL");
+} catch (PDOException $e) {
+}
+
 // Handle save order
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_order'])) {
     try {
@@ -26,10 +31,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_order'])) {
             $stmt = $pdo->prepare("UPDATE content SET display_order = NULL WHERE admin_role = 'lmt'");
             $stmt->execute();
 
-            // Update display_order for all items
+            // Update display_order for all items and track who made the change
             foreach ($order_data as $index => $item) {
-                $stmt = $pdo->prepare("UPDATE content SET display_order = ? WHERE id = ? AND admin_role = 'lmt'");
-                $stmt->execute([$index, $item['id']]);
+                $stmt = $pdo->prepare("UPDATE content SET display_order = ?, updated_by = ? WHERE id = ? AND admin_role = 'lmt'");
+                $stmt->execute([$index, $_SESSION['user_id'], $item['id']]);
             }
 
             // Reset next_content_id
@@ -62,7 +67,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_order'])) {
             $stmt = $pdo->prepare("SELECT version FROM content_version WHERE admin_role = 'lmt'");
             $stmt->execute();
             $new_version = $stmt->fetch();
-            error_log("New version after save: " . ($new_version ? $new_version['version'] : 'unknown'));
+            error_log("New version after save: " . ($new_version ? $new_version['version'] : 'unknown') . " by user: " . $_SESSION['username']);
 
             $pdo->commit();
             $_SESSION['flash_success'] = "Display order saved successfully! TV will update immediately (version: " . ($new_version ? $new_version['version'] : '?') . ")";
@@ -88,8 +93,8 @@ if (isset($_GET['toggle_active'])) {
 
         if ($current) {
             $new_status = $current['is_active'] ? 0 : 1;
-            $stmt = $pdo->prepare("UPDATE content SET is_active = ? WHERE id = ? AND admin_role = 'lmt'");
-            $stmt->execute([$new_status, $content_id]);
+            $stmt = $pdo->prepare("UPDATE content SET is_active = ?, updated_by = ? WHERE id = ? AND admin_role = 'lmt'");
+            $stmt->execute([$new_status, $_SESSION['user_id'], $content_id]);
 
             $stmt = $pdo->prepare("SELECT id, is_active FROM content WHERE admin_role = 'lmt' ORDER BY COALESCE(display_order, 999999) ASC, id ASC");
             $stmt->execute();
@@ -173,8 +178,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['edit_duration'])) {
             $new_duration = convertToSeconds($_POST['display_duration']);
         }
 
-        $stmt = $pdo->prepare("UPDATE content SET display_duration = ? WHERE id = ? AND admin_role = 'lmt'");
-        $stmt->execute([$new_duration, $content_id]);
+        $stmt = $pdo->prepare("UPDATE content SET display_duration = ?, updated_by = ? WHERE id = ? AND admin_role = 'lmt'");
+        $stmt->execute([$new_duration, $_SESSION['user_id'], $content_id]);
 
         $stmt2 = $pdo->prepare("UPDATE content_version SET version = version + 1, last_update = NOW() WHERE admin_role = 'lmt'");
         $stmt2->execute();
