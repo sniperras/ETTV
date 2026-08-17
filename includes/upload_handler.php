@@ -100,8 +100,11 @@ function validateAndUploadFile($file, $upload_dir, $allowed_types = ['jpg', 'jpe
         return 'uploads/videos/' . $filename;
     } elseif (in_array($ext, ['mp3', 'wav', 'ogg', 'm4a'])) {
         return 'uploads/audio/' . $filename;
+<<<<<<< HEAD
     } elseif ($ext === 'pdf' && strpos(str_replace('\\', '/', $upload_dir), '/pdf') !== false) {
         return 'uploads/pdf/' . $filename;
+=======
+>>>>>>> fc327ecb4b40d21a2c71ec47392715bedb0f6e37
     }
 
     return 'uploads/' . $filename;

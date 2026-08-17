@@ -1146,6 +1146,7 @@ if ($version) $current_version = $version['version'];
             if (currentContent.display_duration && currentContent.display_duration > 0) {
                 currentTimeouts.push(setTimeout(() => loadNextContent(), currentContent.display_duration * 1000));
             }
+<<<<<<< HEAD
         }
 
         function getAppBasePath() {
@@ -1198,6 +1199,8 @@ if ($version) $current_version = $version['version'];
             };
 
             tryLoad(0);
+=======
+>>>>>>> fc327ecb4b40d21a2c71ec47392715bedb0f6e37
         }
 
         function loadPDF() {
@@ -1215,7 +1218,14 @@ if ($version) $current_version = $version['version'];
             const pdfUrls = resolvePdfUrl(currentContent.id, pdfData.file_path);
             wrapper.innerHTML = `<div class="pdf-container"><div class="pdf-loading">Loading PDF...</div></div>`;
 
+<<<<<<< HEAD
             loadPdfDocument(pdfUrls, function(pdf) {
+=======
+            const pdfUrl = window.location.origin + filePath;
+            wrapper.innerHTML = `<div class="pdf-container"><div class="pdf-loading">Loading PDF...</div></div>`;
+
+            pdfjsLib.getDocument(pdfUrl).promise.then(function(pdf) {
+>>>>>>> fc327ecb4b40d21a2c71ec47392715bedb0f6e37
                 pdfDoc = pdf;
                 totalPages = pdf.numPages;
                 currentPageIndex = 0;
@@ -1231,9 +1241,15 @@ if ($version) $current_version = $version['version'];
                     renderPDFPages();
                     startPDFRotation();
                 }
+<<<<<<< HEAD
             }, function(error) {
                 console.error('Error loading PDF:', error, pdfUrls);
                 wrapper.innerHTML = `<div class="message-container"><div class="message-card memo"><div class="message-icon">📄</div><div class="message-text">Error loading PDF<br><small style="font-size:14px;">Tried: ${escapeHtml(pdfUrls.join(', '))}</small></div></div></div>`;
+=======
+            }).catch(function(error) {
+                console.error('Error loading PDF:', error);
+                wrapper.innerHTML = `<div class="message-container"><div class="message-card memo"><div class="message-icon">📄</div><div class="message-text">Error loading PDF</div></div></div>`;
+>>>>>>> fc327ecb4b40d21a2c71ec47392715bedb0f6e37
                 if (currentContent.display_duration > 0) {
                     currentTimeouts.push(setTimeout(() => loadNextContent(), currentContent.display_duration * 1000));
                 }
