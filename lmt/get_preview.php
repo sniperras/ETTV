@@ -62,15 +62,9 @@ foreach ($slides as &$slide) {
     }
 }
 
-<<<<<<< HEAD
 // For PDF, return the proxy URL (relative path works in /ettv/ subfolder and at domain root)
 if ($content['content_type'] === 'pdf' || $content['content_type'] === 'ppt') {
     $content['pdf_proxy_url'] = 'pdf_proxy.php?id=' . $content['id'];
-=======
-// For PDF, return the proxy URL
-if ($content['content_type'] === 'ppt') {
-    $content['pdf_proxy_url'] = '/lmt/pdf_proxy.php?id=' . $content['id'];
->>>>>>> fc327ecb4b40d21a2c71ec47392715bedb0f6e37
 }
 
 echo json_encode([

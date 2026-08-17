@@ -1,8 +1,8 @@
 <?php
 // config/db.php
-$host = 'sql309.infinityfree.com';
-$dbname = 'if0_41927736_ettv_db';
-$username = 'if0_41927736';
+$host = 'localhost';
+$dbname = 'ettvinfi_ettv_db';
+$username = 'ettvinfi_ettv_db';
 $password = '6nxm5lTTys';
 
 try {

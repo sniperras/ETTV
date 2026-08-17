@@ -1266,7 +1266,6 @@ unset($_SESSION['flash_success'], $_SESSION['flash_error']);
                 `;
             }
             // Handle PDF Preview
-<<<<<<< HEAD
             // Handle PDF Preview - Updated for InfinityFree
 // Handle PDF Preview - Use proxy for InfinityFree
 // Handle PDF Preview - Check for both 'pdf' and 'ppt'
@@ -1338,55 +1337,6 @@ else if (content.content_type === 'pdf' || content.content_type === 'ppt') {
         renderPdfPreviewDocument(proxyUrl);
     }
 }
-=======
-            else if (content.content_type === 'pdf') {
-                let pdfData;
-                let pdfUrl = '';
-                try {
-                    pdfData = JSON.parse(content.content_data);
-                    pdfUrl = pdfData.file_path || content.content_data;
-                } catch (e) {
-                    pdfUrl = content.content_data;
-                }
-
-                if (!pdfUrl.startsWith('/')) pdfUrl = '/' + pdfUrl;
-                pdfUrl = pdfUrl.replace('uploads/uploads/', 'uploads/');
-                const fullPdfUrl = window.location.origin + pdfUrl;
-
-                previewDiv.innerHTML = `
-                    <div class="pdf-preview-container">
-                        <div class="pdf-toolbar">
-                            <span>📄 PDF Document</span>
-                            <div class="pdf-nav-buttons">
-                                <button class="pdf-nav-btn" id="pdfPreviewPrevBtn" disabled>◀ Prev</button>
-                                <span id="pdfPreviewPageInfo">Loading...</span>
-                                <button class="pdf-nav-btn" id="pdfPreviewNextBtn" disabled>Next ▶</button>
-                            </div>
-                            <span>${formatDurationPreview(content.display_duration)}</span>
-                        </div>
-                        <div class="pdf-canvas-container">
-                            <canvas id="pdfPreviewCanvas" class="pdf-canvas"></canvas>
-                        </div>
-                        <div id="pdfPreviewLoading" class="pdf-loading">
-                            <div style="font-size:40px;">📄</div>
-                            <div>Loading PDF...</div>
-                        </div>
-                    </div>
-                `;
-
-                if (typeof pdfjsLib === 'undefined') {
-                    const script = document.createElement('script');
-                    script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
-                    script.onload = () => {
-                        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-                        renderPdfPreviewDocument(fullPdfUrl);
-                    };
-                    document.head.appendChild(script);
-                } else {
-                    renderPdfPreviewDocument(fullPdfUrl);
-                }
-            }
->>>>>>> fc327ecb4b40d21a2c71ec47392715bedb0f6e37
             // Handle Audio Preview
             else if (content.content_type === 'local_audio') {
                 let audioData;
